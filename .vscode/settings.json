@@ -1,0 +1,11 @@
+{
+   "files.associations": {
+      "__config": "c",
+      "fstream": "c",
+      "locale": "c",
+      "random": "c",
+      "*.tcc": "c",
+      "complex": "c",
+      "system_error": "c"
+   }
+}
