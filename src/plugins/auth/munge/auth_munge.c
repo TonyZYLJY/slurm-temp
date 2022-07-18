@@ -50,9 +50,16 @@
 
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
+#include "src/common/pack.h"
+#include "src/common/read_config.h"
+#include "src/common/slurm_protocol_api.h"
+#include "src/common/slurm_protocol_defs.h"
 #include "src/common/slurm_time.h"
 #include "src/common/uid.h"
 #include "src/common/util-net.h"
+#include "src/common/xmalloc.h"
+#include "src/common/xsignal.h"
+#include "src/common/xstring.h"
 
 #define RETRY_COUNT		20
 #define RETRY_USEC		100000
@@ -86,6 +93,7 @@ const char plugin_name[] = "Munge authentication plugin";
 const char plugin_type[] = "auth/munge";
 const uint32_t plugin_id = AUTH_PLUGIN_MUNGE;
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
+const bool hash_enable = true;
 
 static int bad_cred_test = -1;
 
@@ -101,11 +109,17 @@ typedef struct {
 	bool    verified;  /* true if this cred has been verified            */
 	uid_t   uid;       /* UID. valid only if verified == true            */
 	gid_t   gid;       /* GID. valid only if verified == true            */
+	void *data;        /* payload data */
+	int dlen;          /* payload data length */
 } auth_credential_t;
+
+extern auth_credential_t *auth_p_create(char *opts, uid_t r_uid, void *data,
+					int dlen);
+extern int auth_p_destroy(auth_credential_t *cred);
 
 /* Static prototypes */
 
-static int _decode_cred(auth_credential_t *c, char *socket);
+static int _decode_cred(auth_credential_t *c, char *socket, bool test);
 static void _print_cred(munge_ctx_t ctx);
 
 /*
@@ -113,14 +127,34 @@ static void _print_cred(munge_ctx_t ctx);
  */
 int init(void)
 {
+	int rc = SLURM_SUCCESS;
 	char *fail_test_env = getenv("SLURM_MUNGE_AUTH_FAIL_TEST");
 	if (fail_test_env)
 		bad_cred_test = atoi(fail_test_env);
 	else
 		bad_cred_test = 0;
 
+	/*
+	 * MUNGE has a compile-time option that permits root to decode any
+	 * credential regardless of the MUNGE_OPT_UID_RESTRICTION setting.
+	 * This must not be enabled. Protect against it by ensuring we cannot
+	 * decode a credential restricted to a different uid.
+	 */
+	if (running_in_daemon()) {
+		auth_credential_t *cred = NULL;
+		char *socket = slurm_auth_opts_to_socket(slurm_conf.authinfo);
+		uid_t uid = getuid() + 1;
+
+		cred = auth_p_create(slurm_conf.authinfo, uid, NULL, 0);
+		if (!_decode_cred(cred, socket, true)) {
+			error("MUNGE allows root to decode any credential");
+			rc = SLURM_ERROR;
+		}
+		xfree(socket);
+		auth_p_destroy(cred);
+	}
 	debug("%s loaded", plugin_name);
-	return SLURM_SUCCESS;
+	return rc;
 }
 
 
@@ -129,7 +163,7 @@ int init(void)
  * allocate a credential.  Whether the credential is populated with useful
  * data at this time is implementation-dependent.
  */
-auth_credential_t *auth_p_create(char *opts)
+auth_credential_t *auth_p_create(char *opts, uid_t r_uid, void *data, int dlen)
 {
 	int rc, retry = RETRY_COUNT, auth_ttl;
 	auth_credential_t *cred = NULL;
@@ -154,6 +188,13 @@ auth_credential_t *auth_p_create(char *opts)
 		}
 	}
 
+	rc = munge_ctx_set(ctx, MUNGE_OPT_UID_RESTRICTION, r_uid);
+	if (rc != EMUNGE_SUCCESS) {
+		error("munge_ctx_set failure");
+		munge_ctx_destroy(ctx);
+		return NULL;
+	}
+
 	auth_ttl = slurm_get_auth_ttl();
 	if (auth_ttl)
 		(void) munge_ctx_set(ctx, MUNGE_OPT_TTL, auth_ttl);
@@ -162,6 +203,8 @@ auth_credential_t *auth_p_create(char *opts)
 	cred->magic = MUNGE_MAGIC;
 	cred->verified = false;
 	cred->m_str    = NULL;
+	cred->data = NULL;
+	cred->dlen = 0;
 
 	/*
 	 *  Temporarily block SIGALARM to avoid misleading
@@ -172,7 +215,7 @@ auth_credential_t *auth_p_create(char *opts)
 	ohandler = xsignal(SIGALRM, (SigFunc *)SIG_BLOCK);
 
 again:
-	err = munge_encode(&cred->m_str, ctx, NULL, 0);
+	err = munge_encode(&cred->m_str, ctx, data, dlen);
 	if (err != EMUNGE_SUCCESS) {
 		if ((err == EMUNGE_SOCKET) && retry--) {
 			debug("Munge encode failed: %s (retrying ...)",
@@ -218,6 +261,8 @@ int auth_p_destroy(auth_credential_t *cred)
 	/* Note: Munge cred string not encoded with xmalloc() */
 	if (cred->m_str)
 		free(cred->m_str);
+	if (cred->data)
+		free(cred->data);
 
 	xfree(cred);
 	return SLURM_SUCCESS;
@@ -244,7 +289,7 @@ int auth_p_verify(auth_credential_t *c, char *opts)
 		return SLURM_SUCCESS;
 
 	socket = slurm_auth_opts_to_socket(opts);
-	rc = _decode_cred(c, socket);
+	rc = _decode_cred(c, socket, false);
 	xfree(socket);
 	if (rc < 0)
 		return SLURM_ERROR;
@@ -348,6 +393,34 @@ char *auth_p_get_host(auth_credential_t *cred)
 }
 
 /*
+ * auth_p_verify() must be called first.
+ */
+extern int auth_p_get_data(auth_credential_t *cred, char **data, uint32_t *len)
+{
+	if (!cred || !cred->verified) {
+		/*
+		 * This xassert will trigger on a development build if
+		 * the calling path did not verify the credential first.
+		 */
+		xassert(!cred);
+		slurm_seterrno(ESLURM_AUTH_BADARG);
+		return SLURM_ERROR;
+	}
+
+	xassert(cred->magic == MUNGE_MAGIC);
+
+	if (cred->data && cred->dlen) {
+		*data = xmalloc(cred->dlen);
+		memcpy(*data, cred->data, cred->dlen);
+		*len = cred->dlen;
+	} else {
+		*data = NULL;
+		*len = 0;
+	}
+	return SLURM_SUCCESS;
+}
+
+/*
  * Marshall a credential for transmission over the network, according to
  * Slurm's marshalling protocol.
  */
@@ -411,7 +484,7 @@ unpack_error:
  * Decode the munge encoded credential `m_str' placing results, if validated,
  * into slurm credential `c'
  */
-static int _decode_cred(auth_credential_t *c, char *socket)
+static int _decode_cred(auth_credential_t *c, char *socket, bool test)
 {
 	int retry = RETRY_COUNT;
 	munge_err_t err;
@@ -437,8 +510,10 @@ static int _decode_cred(auth_credential_t *c, char *socket)
 	}
 
 again:
-	err = munge_decode(c->m_str, ctx, NULL, NULL, &c->uid, &c->gid);
+	err = munge_decode(c->m_str, ctx, &c->data, &c->dlen, &c->uid, &c->gid);
 	if (err != EMUNGE_SUCCESS) {
+		if (test)
+			goto done;
 		if ((err == EMUNGE_SOCKET) && retry--) {
 			debug("Munge decode failed: %s (retrying ...)",
 			      munge_ctx_strerror(ctx));

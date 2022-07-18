@@ -64,6 +64,7 @@ typedef struct {
 	slurm_addr_t ioaddr;       /* Address to connect on for normal I/O.
 				      Spawn IO uses messages to the normal
 				      resp_addr. */
+	uid_t uid;		   /* user id for job */
 	uint16_t protocol_version; /* protocol_version of the srun */
 } srun_info_t;
 
@@ -119,6 +120,7 @@ typedef struct {		/* MPMD specifications, needed for Cray */
 } mpmd_set_t;
 
 typedef struct {
+	char *alias_list; /* node name to address aliases */
 	char *container;		/* OCI Container Bundle path	*/
 	slurmstepd_state_t state;	/* Job state			*/
 	pthread_cond_t state_cond;	/* Job state conditional	*/
@@ -260,7 +262,8 @@ stepd_step_rec_t * batch_stepd_step_rec_create(batch_job_launch_msg_t *msg);
 void stepd_step_rec_destroy(stepd_step_rec_t *job);
 
 srun_info_t * srun_info_create(slurm_cred_t *cred, slurm_addr_t *respaddr,
-			       slurm_addr_t *ioaddr, uint16_t protocol_version);
+			       slurm_addr_t *ioaddr, uid_t uid,
+			       uint16_t protocol_version);
 
 void  srun_info_destroy(srun_info_t *srun);
 

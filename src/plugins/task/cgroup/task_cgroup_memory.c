@@ -237,7 +237,7 @@ static int _memcg_initialize(stepd_step_rec_t *job, uint64_t mem_limit,
 		mlb_soft = mlb;
 	}
 
-	memset(&limits, 0, sizeof(limits));
+	cgroup_init_limits(&limits);
 
 	/*
 	 * When RAM space has not to be constrained and we are here, it means
@@ -356,7 +356,14 @@ extern int task_cgroup_memory_check_oom(stepd_step_rec_t *job)
 	return rc;
 }
 
-extern int task_cgroup_memory_add_pid(pid_t pid)
+extern int task_cgroup_memory_add_pid(stepd_step_rec_t *job, pid_t pid,
+				      uint32_t taskid)
 {
+	return cgroup_g_task_addto(CG_MEMORY, job, pid, taskid);
+}
+
+extern int task_cgroup_memory_add_extern_pid(pid_t pid)
+{
+	/* Only in the extern step we will not create specific tasks */
 	return cgroup_g_step_addto(CG_MEMORY, &pid, 1);
 }

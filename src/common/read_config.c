@@ -193,10 +193,20 @@ static void _destroy_slurmctld_host(void *ptr);
 static int _defunct_option(void **dest, slurm_parser_enum_t type,
 			   const char *key, const char *value,
 			   const char *line, char **leftover);
+static void _internal_conf_remove_node(char *node_name);
 static int _validate_and_set_defaults(slurm_conf_t *conf,
                                       s_p_hashtbl_t *hashtbl);
 static int _validate_bcast_exclude(slurm_conf_t *conf);
 static uint16_t *_parse_srun_ports(const char *);
+
+static void _push_to_hashtbls(char *alias, char *hostname, char *address,
+			      char *bcast_address, uint16_t port,
+			      uint16_t cpus, uint16_t boards,
+			      uint16_t sockets, uint16_t cores,
+			      uint16_t threads, bool front_end,
+			      char *cpu_spec_list, uint16_t core_spec_cnt,
+			      uint64_t mem_spec_limit, slurm_addr_t *addr,
+			      bool initialized);
 
 s_p_options_t slurm_conf_options[] = {
 	{"AccountingStorageTRES", S_P_STRING},
@@ -285,7 +295,7 @@ s_p_options_t slurm_conf_options[] = {
 	{"JobFileAppend", S_P_UINT16},
 	{"JobRequeue", S_P_UINT16},
 	{"JobSubmitPlugins", S_P_STRING},
-	{"KeepAliveTime", S_P_UINT16},
+	{"KeepAliveTime", S_P_UINT32},
 	{"KillOnBadExit", S_P_UINT16},
 	{"KillWait", S_P_UINT16},
 	{"LaunchParameters", S_P_STRING},
@@ -297,6 +307,7 @@ s_p_options_t slurm_conf_options[] = {
 	{"MaxArraySize", S_P_UINT32},
 	{"MaxDBDMsgs", S_P_UINT32},
 	{"MaxJobCount", S_P_UINT32},
+	{"MaxNodeCount", S_P_UINT32},
 	{"MaxJobId", S_P_UINT32},
 	{"MaxMemPerCPU", S_P_UINT64},
 	{"MaxMemPerNode", S_P_UINT64},
@@ -679,6 +690,9 @@ static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 		default_nodename_tbl = tbl;
 
 		return 0;
+	} else if (!xstrcasecmp(value, "ALL")) {
+		fatal("'%s' is a reserved word disallowed for use with NodeName",
+		      value);
 	} else {
 		bool no_cpus    = false;
 		bool no_sockets = false;
@@ -2036,6 +2050,15 @@ extern int slurm_conf_nodeset_array(slurm_conf_nodeset_t **ptr_array[])
 	}
 }
 
+static void _free_single_names_ll_t(names_ll_t *p)
+{
+	xfree(p->address);
+	xfree(p->alias);
+	xfree(p->cpu_spec_list);
+	xfree(p->hostname);
+	xfree(p);
+}
+
 static void _free_name_hashtbl(void)
 {
 	int i;
@@ -2044,12 +2067,8 @@ static void _free_name_hashtbl(void)
 	for (i=0; i<NAME_HASH_LEN; i++) {
 		p = node_to_host_hashtbl[i];
 		while (p) {
-			xfree(p->address);
-			xfree(p->alias);
-			xfree(p->cpu_spec_list);
-			xfree(p->hostname);
 			q = p->next_alias;
-			xfree(p);
+			_free_single_names_ll_t(p);
 			p = q;
 		}
 		node_to_host_hashtbl[i] = NULL;
@@ -2247,7 +2266,7 @@ static void _init_slurmd_nodehash(void)
 
 	count = slurm_conf_nodename_array(&ptr_array);
 	for (i = 0; i < count; i++) {
-		check_nodeline_info(ptr_array[i], NULL, _check_callback);
+		expand_nodeline_info(ptr_array[i], NULL, _check_callback);
 		if ((slurmdb_setup_cluster_name_dims() > 1) &&
 		    !conf_ptr->node_prefix)
 			_set_node_prefix(ptr_array[i]->nodenames);
@@ -2484,6 +2503,33 @@ extern char *slurm_conf_get_aliased_nodename()
 }
 
 /*
+ * Return NodeAddr (if set) for a given NodeName, or NULL.
+ */
+extern char *slurm_conf_get_address(const char *node_name)
+{
+	int idx;
+	names_ll_t *p;
+	char *address;
+
+	slurm_conf_lock();
+	_init_slurmd_nodehash();
+
+	idx = _get_hash_idx(node_name);
+	p = node_to_host_hashtbl[idx];
+	while (p && xstrcmp(p->alias, node_name))
+		p = p->next_alias;
+
+	if (!p) {
+		slurm_conf_unlock();
+		return NULL;
+	}
+
+	address = xstrdup(p->address);
+	slurm_conf_unlock();
+	return address;
+}
+
+/*
  * Return BcastAddr (if set) for a given NodeName, or NULL.
  */
 extern char *slurm_conf_get_bcast_address(const char *node_name)
@@ -2540,12 +2586,37 @@ extern uint16_t slurm_conf_get_port(const char *node_name)
 }
 
 /*
+ * Unlink names_ll_t from host_to_node_hashtbl without free'ing.
+ */
+static void _remove_host_to_node_link(names_ll_t *p)
+{
+	int hostname_idx;
+	names_ll_t *p_curr, *p_prev = NULL;
+
+	hostname_idx = _get_hash_idx(p->hostname);
+
+	p_curr = host_to_node_hashtbl[hostname_idx];
+	while (p_curr) {
+		if (p_curr == p) {
+			if (p_prev)
+				p_prev->next_hostname = p_curr->next_hostname;
+			else
+				host_to_node_hashtbl[hostname_idx] =
+					p_curr->next_hostname;
+			break;
+		}
+		p_prev = p_curr;
+		p_curr = p_curr->next_hostname;
+	}
+}
+
+/*
  * Update p's hostname and update host_to_node_hashtbl.
  */
 static void _reset_hostname(names_ll_t *p, char *node_hostname)
 {
 	int old_hostname_idx, new_hostname_idx;
-	names_ll_t *p_curr, *p_prev = NULL;
+	names_ll_t *p_curr;
 
 	old_hostname_idx = _get_hash_idx(p->hostname);
 	new_hostname_idx = _get_hash_idx(node_hostname);
@@ -2558,19 +2629,7 @@ static void _reset_hostname(names_ll_t *p, char *node_hostname)
 		return;
 
 	/* remove old link */
-	p_curr = host_to_node_hashtbl[old_hostname_idx];
-	while (p_curr) {
-		if (p_curr == p) {
-			if (p_prev)
-				p_prev->next_hostname = p_curr->next_hostname;
-			else
-				host_to_node_hashtbl[old_hostname_idx] =
-					p_curr->next_hostname;
-			break;
-		}
-		p_prev = p_curr;
-		p_curr = p_curr->next_hostname;
-	}
+	_remove_host_to_node_link(p);
 
 	/* add new link */
 	p->next_hostname = NULL;
@@ -2610,6 +2669,11 @@ extern void slurm_reset_alias(char *node_name, char *node_addr,
 			break;
 		}
 		p = p->next_alias;
+	}
+	if (!p) {
+		_push_to_hashtbls(node_name, node_hostname, node_addr,
+				  NULL, 0, 0, 0, 0, 0, 0, false, NULL, 0, 0,
+				  NULL, false);
 	}
 	slurm_conf_unlock();
 
@@ -2847,6 +2911,7 @@ extern void free_slurm_conf(slurm_conf_t *ctl_conf_ptr, bool purge_node_hash)
 	xfree (ctl_conf_ptr->mail_prog);
 	xfree (ctl_conf_ptr->mcs_plugin);
 	xfree (ctl_conf_ptr->mcs_plugin_params);
+	FREE_NULL_LIST(ctl_conf_ptr->mpi_conf);
 	xfree (ctl_conf_ptr->mpi_default);
 	xfree (ctl_conf_ptr->mpi_params);
 	FREE_NULL_LIST(ctl_conf_ptr->node_features_conf);
@@ -3000,7 +3065,9 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	ctl_conf_ptr->job_file_append		= NO_VAL16;
 	ctl_conf_ptr->job_requeue		= NO_VAL16;
 	xfree(ctl_conf_ptr->job_submit_plugins);
-	ctl_conf_ptr->keep_alive_time		= NO_VAL16;
+	ctl_conf_ptr->keepalive_interval = NO_VAL;
+	ctl_conf_ptr->keepalive_probes = NO_VAL;
+	ctl_conf_ptr->keepalive_time = NO_VAL;
 	ctl_conf_ptr->kill_on_bad_exit		= 0;
 	ctl_conf_ptr->kill_wait			= NO_VAL16;
 	xfree (ctl_conf_ptr->launch_params);
@@ -3018,6 +3085,7 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	xfree(ctl_conf_ptr->mcs_plugin_params);
 	ctl_conf_ptr->job_acct_oom_kill         = false;
 	ctl_conf_ptr->min_job_age = NO_VAL;
+	FREE_NULL_LIST(ctl_conf_ptr->mpi_conf);
 	xfree (ctl_conf_ptr->mpi_default);
 	xfree (ctl_conf_ptr->mpi_params);
 	ctl_conf_ptr->msg_timeout		= NO_VAL16;
@@ -3118,6 +3186,45 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	return;
 }
 
+extern slurm_conf_node_t *slurm_conf_parse_nodeline(const char *nodeline,
+						    s_p_hashtbl_t **out_hashtbl)
+{
+	int count = 0;
+	slurm_conf_node_t **ptr_array;
+	s_p_hashtbl_t *node_hashtbl = NULL;
+	char *leftover = NULL;
+	s_p_options_t node_options[] = {
+		{"NodeName", S_P_ARRAY, _parse_nodename, _destroy_nodename},
+		{NULL}
+	};
+
+	xassert(out_hashtbl);
+
+	node_hashtbl = s_p_hashtbl_create(node_options);
+	if (!s_p_parse_line(node_hashtbl, nodeline, &leftover)) {
+		s_p_hashtbl_destroy(node_hashtbl);
+		error("Failed to parse nodeline: '%s'", nodeline);
+		return NULL;
+	}
+
+	if (!s_p_get_array((void ***)&ptr_array, &count, "NodeName",
+			   node_hashtbl)) {
+		s_p_hashtbl_destroy(node_hashtbl);
+		error("Failed to find nodename in nodeline: '%s'", nodeline);
+		return NULL;
+	}
+
+	if (count != 1) {
+		s_p_hashtbl_destroy(node_hashtbl);
+		error("Failed to find one NodeName in nodeline: '%s'",
+		      nodeline);
+		return NULL;
+	}
+
+	*out_hashtbl = node_hashtbl;
+	return ptr_array[0];
+}
+
 /* caller must lock conf_lock */
 static int _init_slurm_conf(const char *file_name)
 {
@@ -3137,7 +3244,8 @@ static int _init_slurm_conf(const char *file_name)
 
 	/* init hash to 0 */
 	conf_ptr->hash_val = 0;
-	rc = s_p_parse_file(conf_hashtbl, &conf_ptr->hash_val, name, false);
+	rc = s_p_parse_file(conf_hashtbl, &conf_ptr->hash_val, name, false,
+			    NULL);
 	/* s_p_dump_values(conf_hashtbl, slurm_conf_options); */
 
 	if (_validate_and_set_defaults(conf_ptr, conf_hashtbl) == SLURM_ERROR)
@@ -3181,6 +3289,7 @@ _destroy_slurm_conf(void)
 		default_partition_tbl = NULL;
 	}
 	free_slurm_conf(conf_ptr, true);
+	memset(conf_ptr, 0, sizeof(slurm_conf_t));
 	conf_initialized = false;
 
 	/* xfree(conf_ptr); */
@@ -3292,6 +3401,48 @@ static int _establish_config_source(char **config_file, int *memfd)
 	debug2("%s: using config_file=%s (fetched)", __func__, *config_file);
 
 	return SLURM_SUCCESS;
+}
+
+/*
+ * slurm_reset_alias() for each node in alias_list
+ *
+ * IN alias_list - string with sets of node name, communication address in []
+ * 	and hostname. Each element in the set if colon separated and
+ * 	each set is comma separated.
+ * 	eg.: ec0:[1.2.3.4]:foo,ec1:[1.2.3.5]:bar
+ * RET return SLURM_SUCCESS on success, SLURM_ERROR otherwise.
+ */
+extern int set_nodes_alias(const char *alias_list)
+{
+	int rc = SLURM_SUCCESS;
+	char *aliases, *save_ptr = NULL;
+	char *addr, *hostname, *slurm_name;
+
+	aliases = xstrdup(alias_list);
+	slurm_name = strtok_r(aliases, ":", &save_ptr);
+	while (slurm_name) {
+		/* Checking for [] around address */
+		if (save_ptr[0] == '[') {
+			save_ptr++;
+			addr = strtok_r(NULL, "]", &save_ptr);
+			save_ptr++;
+		} else
+			addr = strtok_r(NULL, ":", &save_ptr);
+		if (!addr) {
+			rc = SLURM_ERROR;
+			break;
+		}
+		hostname = strtok_r(NULL, ",", &save_ptr);
+		if (!hostname) {
+			rc = SLURM_ERROR;
+			break;
+		}
+		slurm_reset_alias(slurm_name, addr, hostname);
+		slurm_name = strtok_r(NULL, ":", &save_ptr);
+	}
+	xfree(aliases);
+
+	return rc;
 }
 
 /*
@@ -4024,10 +4175,49 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	(void) s_p_get_string(&conf->health_check_program, "HealthCheckProgram",
 			      hashtbl);
 
-	if (!s_p_get_uint16(&conf->keep_alive_time, "KeepAliveTime", hashtbl)) {
-		conf->keep_alive_time = DEFAULT_KEEP_ALIVE_TIME;
+	if (!s_p_get_uint32(&conf->keepalive_time, "KeepAliveTime", hashtbl)) {
+		conf->keepalive_time = DEFAULT_KEEPALIVE_TIME;
 	} else if (running_in_slurmctld())
 		error("KeepAliveTime parameter has moved to CommunicationParameters. Please update your config.");
+	/* keepalive_time needs to eventually fit inside an int */
+	if ((conf->keepalive_time != DEFAULT_KEEPALIVE_TIME) &&
+	    (conf->keepalive_time > INT_MAX)) {
+		error("KeepAliveTime %u invalid, ignoring it.",
+		      conf->keepalive_time);
+		conf->keepalive_time = DEFAULT_KEEPALIVE_TIME;
+	}
+
+	/*
+	 * Parse keepalivetime option here so CommunicationParameters takes
+	 * precedence over the deprecated KeepAliveTime standalone option.
+	 */
+	if ((temp_str = xstrcasestr(slurm_conf.comm_params,
+				    "keepaliveinterval="))) {
+		long tmp_val = strtol(temp_str + 18, NULL, 10);
+		if (tmp_val >= 0 && tmp_val <= INT_MAX)
+			slurm_conf.keepalive_interval = tmp_val;
+		else
+			error("CommunicationParameters option keepaliveinterval=%ld is invalid, ignored",
+			      tmp_val);
+	}
+	if ((temp_str = xstrcasestr(slurm_conf.comm_params,
+				    "keepaliveprobes="))) {
+		long tmp_val = strtol(temp_str + 16, NULL, 10);
+		if (tmp_val >= 0 && tmp_val <= INT_MAX)
+			slurm_conf.keepalive_probes = tmp_val;
+		else
+			error("CommunicationParameters option keepaliveprobes=%ld is invalid, ignored",
+			      tmp_val);
+	}
+	if ((temp_str = xstrcasestr(slurm_conf.comm_params,
+				    "keepalivetime="))) {
+		long tmp_val = strtol(temp_str + 14, NULL, 10);
+		if ((tmp_val >= 0) && (tmp_val <= INT_MAX))
+			slurm_conf.keepalive_time = tmp_val;
+		else
+			error("CommunicationParameters option keepalivetime=%ld is invalid, ignored",
+			      tmp_val);
+	}
 
 	if (!s_p_get_uint16(&conf->kill_on_bad_exit, "KillOnBadExit", hashtbl))
 		conf->kill_on_bad_exit = DEFAULT_KILL_ON_BAD_EXIT;
@@ -4117,8 +4307,10 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		uint32_t tmp32 = conf->max_job_id - conf->first_job_id + 1;
 		if (conf->max_job_cnt > tmp32) {
 			/* Needed for job array support */
-			info("Resetting MaxJobCount from %u to %u (MaxJobId - FirstJobId + 1)",
-			     conf->max_job_cnt, tmp32);
+			if (running_in_slurmctld()) {
+				info("Resetting MaxJobCount from %u to %u (MaxJobId - FirstJobId + 1)",
+				     conf->max_job_cnt, tmp32);
+			}
 			conf->max_job_cnt = tmp32;
 		}
 	}
@@ -4133,6 +4325,8 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	} else if (s_p_get_uint64(&uint64_tmp, "MaxMemPerCPU", hashtbl)) {
 		   error("MaxMemPerCPU ignored, since it's mutually exclusive with MaxMemPerNode");
 	}
+
+	s_p_get_uint32(&conf->max_node_cnt, "MaxNodeCount", hashtbl);
 
 	if (!s_p_get_uint32(&conf->max_step_cnt, "MaxStepCount", hashtbl))
 		conf->max_step_cnt = DEFAULT_MAX_STEP_COUNT;
@@ -4707,6 +4901,13 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	if (!s_p_get_string(&conf->select_type, "SelectType", hashtbl))
 		conf->select_type = xstrdup(DEFAULT_SELECT_TYPE);
 
+	if (conf->max_node_cnt &&
+	    !xstrstr(conf->select_type, "cons_tres")) {
+		conf->max_node_cnt = 0;
+		error("MaxNodeCount only compatible with cons_tres");
+		return SLURM_ERROR;
+	}
+
 	if (s_p_get_string(&temp_str,
 			   "SelectTypeParameters", hashtbl)) {
 		uint16_t type_param;
@@ -5108,16 +5309,21 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
  *
  * Returns an xmalloc()ed string which the caller must free with xfree().
  */
-extern char *
-slurm_conf_expand_slurmd_path(const char *path, const char *node_name)
+extern char *slurm_conf_expand_slurmd_path(const char *path,
+					   const char *node_name,
+					   const char *host_name)
 {
-	char *hostname;
+	const char *hostname;
 	char *dir = NULL;
 
 	dir = xstrdup(path);
-	hostname = _internal_get_hostname(node_name);
+	if (!host_name)
+		hostname = _internal_get_hostname(node_name);
+	else
+		hostname = host_name;
 	xstrsubstitute(dir, "%h", hostname);
-	xfree(hostname);
+	if (!host_name)
+		xfree(hostname);
 	xstrsubstitute(dir, "%n", node_name);
 
 	return dir;
@@ -5404,6 +5610,11 @@ extern char * debug_flags2str(uint64_t debug_flags)
 			xstrcat(rc, ",");
 		xstrcat(rc, "License");
 	}
+	if (debug_flags & DEBUG_FLAG_MPI) {
+		if (rc)
+			xstrcat(rc, ",");
+		xstrcat(rc, "MPI");
+	}
 	if (debug_flags & DEBUG_FLAG_NET) {
 		if (rc)
 			xstrcat(rc, ",");
@@ -5582,6 +5793,8 @@ extern int debug_str2flags(char *debug_flags, uint64_t *flags_out)
 			(*flags_out) |= DEBUG_FLAG_JOB_CONT;
 		else if (xstrcasecmp(tok, "License") == 0)
 			(*flags_out) |= DEBUG_FLAG_LICENSE;
+		else if (xstrcasecmp(tok, "MPI") == 0)
+			(*flags_out) |= DEBUG_FLAG_MPI;
 		else if (xstrcasecmp(tok, "Network") == 0 ||
 			 xstrcasecmp(tok, "Net") == 0)
 			(*flags_out) |= DEBUG_FLAG_NET;
@@ -5942,21 +6155,18 @@ extern int add_remote_nodes_to_conf_tbls(char *node_list,
 		return SLURM_ERROR;
 	}
 
-	/*
-	 * flush tables since clusters could share the same nodes names.
-	 * Leave nodehash_intialized so that the tables don't get overridden
-	 * later
-	 */
-	_free_name_hashtbl();
-	nodehash_initialized = true;
+	slurm_conf_lock();
+	_init_slurmd_nodehash();
 
 	while ((hostname = hostlist_shift(host_list))) {
+		_internal_conf_remove_node(hostname);
 		_push_to_hashtbls(hostname, hostname,
 				  NULL, NULL, 0, 0,
 				  0, 0, 0, 0, false, NULL, 0,
 				  0, &node_addrs[i++], true);
 		free(hostname);
 	}
+	slurm_conf_unlock();
 
 	hostlist_destroy(host_list);
 
@@ -5980,4 +6190,57 @@ extern void config_test_start(void)
 {
 	lvl = LOG_LEVEL_ERROR;
 	local_test_config_rc = 0;
+}
+
+extern void slurm_conf_add_node(node_record_t *node_ptr)
+{
+	slurm_conf_lock();
+	_init_slurmd_nodehash();
+
+	_push_to_hashtbls(node_ptr->name, node_ptr->node_hostname,
+			  node_ptr->comm_name, node_ptr->bcast_address,
+			  node_ptr->port, node_ptr->cpus, node_ptr->boards,
+			  node_ptr->tot_sockets, node_ptr->cores,
+			  node_ptr->threads, 0, node_ptr->cpu_spec_list,
+			  node_ptr->core_spec_cnt, node_ptr->mem_spec_limit,
+			  NULL, false);
+	slurm_conf_unlock();
+}
+
+static void _internal_conf_remove_node(char *node_name)
+{
+	int alias_idx;
+	names_ll_t *p_prev = NULL, *p_curr;
+
+	alias_idx = _get_hash_idx(node_name);
+
+	p_curr = node_to_host_hashtbl[alias_idx];
+	while (p_curr) {
+		if (!xstrcmp(p_curr->alias, node_name)) {
+			if (p_prev)
+				p_prev->next_alias = p_curr->next_alias;
+			else
+				node_to_host_hashtbl[alias_idx] =
+					p_curr->next_alias;
+			break;
+		}
+
+		p_prev = p_curr;
+		p_curr = p_curr->next_alias;
+	}
+
+	if (p_curr) {
+		_remove_host_to_node_link(p_curr);
+
+		_free_single_names_ll_t(p_curr);
+	}
+
+}
+
+extern void slurm_conf_remove_node(char *node_name)
+{
+	slurm_conf_lock();
+	_init_slurmd_nodehash();
+	_internal_conf_remove_node(node_name);
+	slurm_conf_unlock();
 }

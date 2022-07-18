@@ -43,6 +43,7 @@
 #include <dirent.h>
 #include <grp.h>
 #include <inttypes.h>
+#include <netdb.h>
 #include <regex.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -78,6 +79,8 @@ strong_alias(stepd_getpw, slurm_stepd_getpw);
 strong_alias(xfree_struct_passwd, slurm_xfree_struct_passwd);
 strong_alias(stepd_getgr, slurm_stepd_getgr);
 strong_alias(xfree_struct_group_array, slurm_xfree_struct_group_array);
+strong_alias(stepd_gethostbyname, slurm_stepd_gethostbyname);
+strong_alias(xfree_struct_hostent, slurm_xfree_struct_hostent);
 strong_alias(stepd_get_namespace_fd, slurm_stepd_get_namespace_fd);
 
 /*
@@ -105,8 +108,8 @@ _handle_stray_socket(const char *socket_name)
 	}
 
 	if ((uid = getuid()) != buf.st_uid) {
-		debug3("_handle_stray_socket: socket %s is not owned by uid %d",
-		       socket_name, (int)uid);
+		debug3("_handle_stray_socket: socket %s is not owned by uid %u",
+		       socket_name, uid);
 		return;
 	}
 
@@ -246,7 +249,7 @@ extern int stepd_connect(const char *directory, const char *nodename,
 	if (directory == NULL) {
 		slurm_conf_t *cf = slurm_conf_lock();
 		directory = slurm_conf_expand_slurmd_path(cf->slurmd_spooldir,
-							  nodename);
+							  nodename, NULL);
 		slurm_conf_unlock();
 	}
 
@@ -317,11 +320,10 @@ stepd_notify_job(int fd, uint16_t protocol_version, char *message)
 /*
  * Send a signal to the proctrack container of a job step.
  */
-int
-stepd_signal_container(int fd, uint16_t protocol_version, int signal, int flags,
-		       uid_t req_uid)
+int stepd_signal_container(int fd, uint16_t protocol_version, int signal,
+			   int flags, char *details, uid_t req_uid)
 {
-	int req = REQUEST_SIGNAL_CONTAINER;
+	int req = REQUEST_SIGNAL_CONTAINER, details_len = 0;
 	int rc;
 	int errnum = 0;
 
@@ -329,6 +331,10 @@ stepd_signal_container(int fd, uint16_t protocol_version, int signal, int flags,
 	if (protocol_version >= SLURM_22_05_PROTOCOL_VERSION) {
 		safe_write(fd, &signal, sizeof(int));
 		safe_write(fd, &flags, sizeof(int));
+		if (details)
+			details_len = strlen(details);
+		safe_write(fd, &details_len, sizeof(int));
+		safe_write(fd, details, details_len);
 		safe_write(fd, &req_uid, sizeof(uid_t));
 	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_write(fd, &signal, sizeof(int));
@@ -386,19 +392,27 @@ rwfail:
  * On success returns SLURM_SUCCESS and fills in resp->local_pids,
  * resp->gtids, resp->ntasks, and resp->executable.
  */
-int
-stepd_attach(int fd, uint16_t protocol_version,
-	     slurm_addr_t *ioaddr, slurm_addr_t *respaddr,
-	     void *job_cred_sig, reattach_tasks_response_msg_t *resp)
+int stepd_attach(int fd, uint16_t protocol_version, slurm_addr_t *ioaddr,
+		 slurm_addr_t *respaddr, void *job_cred_sig, uint32_t sig_len,
+		 uid_t uid, reattach_tasks_response_msg_t *resp)
 {
 	int req = REQUEST_ATTACH;
 	int rc = SLURM_SUCCESS;
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_22_05_PROTOCOL_VERSION) {
+		safe_write(fd, &req, sizeof(int));
+		safe_write(fd, ioaddr, sizeof(slurm_addr_t));
+		safe_write(fd, respaddr, sizeof(slurm_addr_t));
+		safe_write(fd, &sig_len, sizeof(uint32_t));
+		safe_write(fd, job_cred_sig, sig_len);
+		safe_write(fd, &uid, sizeof(uid_t));
+		safe_write(fd, &protocol_version, sizeof(uint16_t));
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_write(fd, &req, sizeof(int));
 		safe_write(fd, ioaddr, sizeof(slurm_addr_t));
 		safe_write(fd, respaddr, sizeof(slurm_addr_t));
 		safe_write(fd, job_cred_sig, SLURM_IO_KEY_SIZE);
+		safe_write(fd, &uid, sizeof(uid_t));
 		safe_write(fd, &protocol_version, sizeof(uint16_t));
 	} else
 		goto rwfail;
@@ -529,7 +543,7 @@ stepd_available(const char *directory, const char *nodename)
 	if (directory == NULL) {
 		slurm_conf_t *cf = slurm_conf_lock();
 		directory = slurm_conf_expand_slurmd_path(
-			cf->slurmd_spooldir, nodename);
+			cf->slurmd_spooldir, nodename, NULL);
 		slurm_conf_unlock();
 	}
 
@@ -627,7 +641,7 @@ stepd_cleanup_sockets(const char *directory, const char *nodename)
 			} else {
 				if (stepd_signal_container(
 					    fd, protocol_version, SIGKILL, 0,
-					    getuid())
+					    NULL, getuid())
 				    == -1) {
 					debug("Error sending SIGKILL to %ps",
 					      &step_id);
@@ -871,6 +885,85 @@ extern void xfree_struct_group_array(struct group **grps)
 		xfree(grps[i]);
 	}
 	xfree(grps);
+}
+
+extern struct hostent *stepd_gethostbyname(int fd, uint16_t protocol_version,
+					   int mode, const char *nodename)
+{
+	int req = REQUEST_GETHOST;
+	int found = 0;
+	int len = 0;
+	int cnt = 0;
+	struct hostent *host = NULL;
+
+	safe_write(fd, &req, sizeof(int));
+
+	safe_write(fd, &mode, sizeof(int));
+
+	if (nodename) {
+		len = strlen(nodename);
+		safe_write(fd, &len, sizeof(int));
+		safe_write(fd, nodename, len);
+	} else {
+		safe_write(fd, &len, sizeof(int));
+	}
+
+	safe_read(fd, &found, sizeof(int));
+
+	if (!found)
+		return NULL;
+
+	host = xmalloc(sizeof(struct hostent));
+
+	safe_read(fd, &len, sizeof(int));
+	host->h_name = xmalloc(len + 1);
+	safe_read(fd, host->h_name, len);
+
+	safe_read(fd, &cnt, sizeof(int));
+	host->h_aliases = xcalloc(cnt + 1, sizeof(char *));
+	for (int i = 0; i < cnt; i++) {
+		safe_read(fd, &len, sizeof(int));
+		host->h_aliases[i] = xmalloc(len + 1);
+		safe_read(fd, host->h_aliases[i], len);
+	}
+	safe_read(fd, &host->h_addrtype, sizeof(int));
+	safe_read(fd, &len, sizeof(int));
+	host->h_length = len;
+
+	/*
+	 * In the current implementation, we define each host to
+	 * only have a single address.
+	 * (Since h_addr_list is a NULL terminated array, allocate
+	 * space for two elements.)
+	 */
+	host->h_addr_list = xcalloc(2, sizeof(char *));
+	host->h_addr_list[0] = xmalloc(len);
+	safe_read(fd, host->h_addr_list[0], len);
+
+	debug("Leaving %s", __func__);
+	return host;
+
+rwfail:
+	xfree_struct_hostent(host);
+	return NULL;
+
+}
+
+extern void xfree_struct_hostent(struct hostent *host)
+{
+	if (!host)
+		return;
+	xfree(host->h_name);
+	for (int i = 0; host->h_aliases && host->h_aliases[i];
+	     i++) {
+		xfree(host->h_aliases[i]);
+	}
+	xfree(host->h_aliases);
+	if (host->h_addr_list) {
+		xfree(host->h_addr_list[0]);
+		xfree(host->h_addr_list);
+	}
+	xfree(host);
 }
 
 /*

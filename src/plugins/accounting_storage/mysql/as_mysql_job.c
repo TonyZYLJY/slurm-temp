@@ -354,7 +354,6 @@ extern int as_mysql_job_start(mysql_conn_t *mysql_conn, job_record_t *job_ptr)
 {
 	int rc = SLURM_SUCCESS;
 	char *nodes = NULL, *jname = NULL;
-	int track_steps = 0;
 	char *partition = NULL;
 	char *query = NULL;
 	int reinit = 0;
@@ -504,22 +503,15 @@ extern int as_mysql_job_start(mysql_conn_t *mysql_conn, job_record_t *job_ptr)
 
 no_rollup_change:
 
-	if (job_ptr->name && job_ptr->name[0]) {
+	if (job_ptr->name && job_ptr->name[0])
 		jname = job_ptr->name;
-		if (!xstrcmp(jname, "interactive"))
-			track_steps = 1;
-	} else {
+	else
 		jname = "allocation";
-		track_steps = 1;
-	}
 
 	if (job_ptr->nodes && job_ptr->nodes[0])
 		nodes = job_ptr->nodes;
 	else
 		nodes = "None assigned";
-
-	if (job_ptr->batch_flag)
-		track_steps = 1;
 
 	/* Grab the wckey once to make sure it is placed. */
 	if (job_ptr->assoc_id && (!job_ptr->db_index || job_ptr->wckey))
@@ -532,6 +524,9 @@ no_rollup_change:
 		partition = job_ptr->part_ptr->name;
 	else if (job_ptr->partition)
 		partition = job_ptr->partition;
+
+	/* Mark the database so we know we have recieved the start record. */
+	job_ptr->db_flags |= SLURMDB_JOB_FLAG_START_R;
 
 	if (!job_ptr->db_index) {
 		uint64_t env_hash_inx = 0, script_hash_inx = 0;
@@ -570,7 +565,7 @@ no_rollup_change:
 			"id_assoc, id_qos, id_user, "
 			"id_group, nodelist, id_resv, timelimit, "
 			"time_eligible, time_submit, time_start, "
-			"job_name, track_steps, state, priority, cpus_req, "
+			"job_name, state, priority, cpus_req, "
 			"nodes_alloc, mem_req, flags, state_reason_prev, "
 			"env_hash_inx, script_hash_inx",
 			mysql_conn->cluster_name, job_table);
@@ -610,7 +605,7 @@ no_rollup_change:
 			   ") values (%u, UNIX_TIMESTAMP(), "
 			   "%u, %u, %u, %u, %u, %u, %u, %u, "
 			   "'%s', %u, %u, %ld, %ld, %ld, "
-			   "'%s', %u, %u, %u, %u, %u, %"PRIu64", %u, %u, "
+			   "'%s', %u, %u, %u, %u, %"PRIu64", %u, %u, "
 			   "%"PRIu64", %"PRIu64,
 			   job_ptr->job_id,
 			   job_ptr->array_job_id, array_task_id,
@@ -619,7 +614,7 @@ no_rollup_change:
 			   job_ptr->user_id, job_ptr->group_id, nodes,
 			   job_ptr->resv_id, job_ptr->time_limit,
 			   begin_time, submit_time, start_time,
-			   jname, track_steps, job_state,
+			   jname, job_state,
 			   job_ptr->priority, job_ptr->details->min_cpus,
 			   job_ptr->total_nodes,
 			   job_ptr->details->pn_min_memory,
@@ -671,7 +666,7 @@ no_rollup_change:
 			   "nodelist='%s', id_resv=%u, timelimit=%u, "
 			   "time_submit=%ld, time_eligible=%ld, "
 			   "time_start=%ld, mod_time=UNIX_TIMESTAMP(), "
-			   "job_name='%s', track_steps=%u, id_qos=%u, "
+			   "job_name='%s', id_qos=%u, "
 			   "state=greatest(state, %u), priority=%u, "
 			   "cpus_req=%u, nodes_alloc=%u, "
 			   "mem_req=%"PRIu64", id_array_job=%u, id_array_task=%u, "
@@ -682,7 +677,7 @@ no_rollup_change:
 			   job_ptr->group_id, nodes,
 			   job_ptr->resv_id, job_ptr->time_limit,
 			   submit_time, begin_time, start_time,
-			   jname, track_steps, job_ptr->qos_id, job_state,
+			   jname, job_ptr->qos_id, job_state,
 			   job_ptr->priority, job_ptr->details->min_cpus,
 			   job_ptr->total_nodes,
 			   job_ptr->details->pn_min_memory,
@@ -895,6 +890,10 @@ extern List as_mysql_modify_job(mysql_conn_t *mysql_conn, uint32_t uid,
 	ListIterator itr;
 	List id_switch_list = NULL;
 	id_switch_t *id_switch;
+	bool is_admin;
+
+	is_admin = is_user_min_admin_level(mysql_conn, uid,
+					   SLURMDB_ADMIN_OPERATOR);
 
 	if (!job_cond || !job) {
 		error("we need something to change");
@@ -902,15 +901,22 @@ extern List as_mysql_modify_job(mysql_conn_t *mysql_conn, uint32_t uid,
 	} else if (check_connection(mysql_conn) != SLURM_SUCCESS)
 		return NULL;
 
+	if (!is_admin && (job->admin_comment || job->system_comment)) {
+		errno = ESLURM_ACCESS_DENIED;
+		return NULL;
+	}
+
 	if (job->derived_ec != NO_VAL)
 		xstrfmtcat(vals, ", derived_ec=%u", job->derived_ec);
 
 	if (job->derived_es)
 		xstrfmtcat(vals, ", derived_es='%s'", job->derived_es);
 
+	if (job->admin_comment)
+		xstrfmtcat(vals, ", admin_comment='%s'", job->admin_comment);
+
 	if (job->system_comment)
-		xstrfmtcat(vals, ", system_comment='%s'",
-			   job->system_comment);
+		xstrfmtcat(vals, ", system_comment='%s'", job->system_comment);
 
 	if (job->wckey)
 		xstrfmtcat(vals, ", wckey='%s'", job->wckey);
@@ -941,9 +947,7 @@ extern List as_mysql_modify_job(mysql_conn_t *mysql_conn, uint32_t uid,
 		char tmp_char[25];
 		char *vals_mod = NULL;
 
-		if ((uid != job_rec->uid) &&
-		    !is_user_min_admin_level(mysql_conn, uid,
-					     SLURMDB_ADMIN_OPERATOR)) {
+		if ((uid != job_rec->uid) && !is_admin) {
 			errno = ESLURM_ACCESS_DENIED;
 			rc = SLURM_ERROR;
 			break;
@@ -1176,26 +1180,11 @@ extern int as_mysql_job_complete(mysql_conn_t *mysql_conn,
 			job_state = job_ptr->job_state & JOB_STATE_BASE;
 	}
 
-	slurm_mutex_lock(&rollup_lock);
-	if (end_time < global_last_rollup) {
+	if (trigger_reroll(mysql_conn, end_time))
 		debug("Need to reroll usage from %s Job %u from %s %s then and we are just now hearing about it.",
 		      slurm_ctime2(&end_time),
 		      job_ptr->job_id, mysql_conn->cluster_name,
 		      IS_JOB_RESIZING(job_ptr) ? "resized" : "ended");
-		global_last_rollup = end_time;
-		slurm_mutex_unlock(&rollup_lock);
-
-		query = xstrdup_printf("update \"%s_%s\" set "
-				       "hourly_rollup=%ld, "
-				       "daily_rollup=%ld, monthly_rollup=%ld",
-				       mysql_conn->cluster_name,
-				       last_ran_table, end_time,
-				       end_time, end_time);
-		DB_DEBUG(DB_JOB, mysql_conn->conn, "query\n%s", query);
-		(void) mysql_db_query(mysql_conn, query);
-		xfree(query);
-	} else
-		slurm_mutex_unlock(&rollup_lock);
 
 	if (!job_ptr->db_index) {
 		if (!(job_ptr->db_index =
@@ -1256,11 +1245,14 @@ extern int as_mysql_job_complete(mysql_conn_t *mysql_conn,
 		 */
 		exit_code = 256;
 	}
+	xstrfmtcat(query, ", exit_code=%d, ", exit_code);
 
-	xstrfmtcat(query,
-		   ", exit_code=%d, kill_requid=%d where job_db_inx=%"PRIu64";",
-		   exit_code, job_ptr->requid,
-		   job_ptr->db_index);
+	if (job_ptr->requid == (uid_t) -1)
+		xstrfmtcat(query, "kill_requid=null ");
+	else
+		xstrfmtcat(query, "kill_requid=%u ", job_ptr->requid);
+
+	xstrfmtcat(query, "where job_db_inx=%"PRIu64";", job_ptr->db_index);
 
 	DB_DEBUG(DB_JOB, mysql_conn->conn, "query\n%s", query);
 	rc = mysql_db_query(mysql_conn, query);
@@ -1529,12 +1521,15 @@ extern int as_mysql_step_complete(mysql_conn_t *mysql_conn,
 
 	/* The stepid could be negative so use %d not %u */
 	query = xstrdup_printf(
-		"update \"%s_%s\" set time_end=%d, state=%u, "
-		"kill_requid=%d, exit_code=%d",
+		"update \"%s_%s\" set time_end=%d, state=%u, exit_code=%d, ",
 		mysql_conn->cluster_name, step_table, (int)now,
 		comp_status,
-		step_ptr->requid,
 		exit_code);
+
+	if (step_ptr->requid == (uid_t) -1)
+		xstrfmtcat(query, "kill_requid=null");
+	else
+		xstrfmtcat(query, "kill_requid=%u", step_ptr->requid);
 
 
 	if (jobacct) {

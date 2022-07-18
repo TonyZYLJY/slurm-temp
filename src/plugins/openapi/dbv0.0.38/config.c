@@ -76,23 +76,30 @@ static int _op_handler_config(const char *context_id,
 	int rc = SLURM_SUCCESS;
 	data_t *errors = populate_response_format(resp);
 
-	if ((method == HTTP_REQUEST_GET) || (method == HTTP_REQUEST_POST)) {
-		for (int i = 0; (!rc) && (i < ARRAY_SIZE(ops)); i++) {
-			int rc2 = ops[i](context_id, method, parameters, query,
-					 tag, resp, auth);
+	if ((method != HTTP_REQUEST_GET) && (method != HTTP_REQUEST_POST))
+		return resp_error(errors, ESLURM_REST_INVALID_QUERY,
+				  "invalid method requested", NULL);
 
-			/*
-			 * ignore empty results as there may simply be nothing
-			 * there to dump.
-			 **/
-			if (rc2 != ESLURM_REST_EMPTY_RESULT)
-				rc = MAX(rc, rc2);
-		}
-	} else
-		rc = ESLURM_REST_INVALID_QUERY;
+	for (int i = 0; (!rc) && (i < ARRAY_SIZE(ops)); i++) {
+		int rc2 = ops[i](context_id, method, parameters, query, tag,
+				 resp, auth);
 
-	if (method == HTTP_REQUEST_POST)
-		rc = db_query_commit(errors, auth);
+		/*
+		 * ignore empty results as there may simply be nothing
+		 * there to dump.
+		 **/
+		if (rc2 != ESLURM_REST_EMPTY_RESULT)
+			rc = rc2;
+	}
+
+	if (method == HTTP_REQUEST_POST) {
+		if (!rc)
+			rc = db_query_commit(errors, auth);
+		else
+			rc = resp_error(errors, rc,
+					"refusing to commit after error",
+					NULL);
+	}
 
 	return rc;
 }

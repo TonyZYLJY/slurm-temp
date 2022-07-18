@@ -66,6 +66,57 @@ typedef struct {
 	List qos_list;
 } foreach_account_t;
 
+typedef struct {
+	data_t *errors;
+	slurmdb_account_cond_t *account_cond;
+} foreach_query_search_t;
+
+/* Change the account search conditions based on input parameters */
+static data_for_each_cmd_t _foreach_query_search(const char *key,
+						 data_t *data,
+						 void *arg)
+{
+	foreach_query_search_t *args = arg;
+	data_t *errors = args->errors;
+
+	if (!xstrcasecmp("with_deleted", key)) {
+		if (data_convert_type(data, DATA_TYPE_BOOL) != DATA_TYPE_BOOL) {
+			resp_error(errors, ESLURM_REST_INVALID_QUERY,
+				   "must be a Boolean", NULL);
+			return DATA_FOR_EACH_FAIL;
+		}
+
+		if (data->data.bool_u)
+			args->account_cond->with_deleted = true;
+		else
+			args->account_cond->with_deleted = false;
+
+		return DATA_FOR_EACH_CONT;
+	}
+
+	resp_error(errors, ESLURM_REST_INVALID_QUERY, "Unknown query field",
+		   NULL);
+	return DATA_FOR_EACH_FAIL;
+}
+
+static int _parse_other_params(data_t *query,
+			       slurmdb_account_cond_t *cond,
+			       data_t *errors)
+{
+	if (!query || !data_get_dict_length(query))
+		return SLURM_SUCCESS;
+
+	foreach_query_search_t args = {
+		.errors = errors,
+		.account_cond = cond,
+	};
+
+	if (data_dict_for_each(query, _foreach_query_search, &args) < 0)
+		return SLURM_ERROR;
+	else
+		return SLURM_SUCCESS;
+}
+
 static int _foreach_account(void *x, void *arg)
 {
 	parser_env_t penv = { 0 };
@@ -149,6 +200,12 @@ static data_for_each_cmd_t _foreach_update_acct(data_t *data, void *arg)
 		slurmdb_destroy_account_rec(acct);
 		return DATA_FOR_EACH_FAIL;
 	} else {
+		/* sacctmgr will set the org/desc as name if NULL */
+		if (!acct->organization)
+			acct->organization = xstrdup(acct->name);
+		if (!acct->description)
+			acct->description = xstrdup(acct->name);
+
 		(void)list_append(args->acct_list, acct);
 		return DATA_FOR_EACH_CONT;
 	}
@@ -219,6 +276,8 @@ static int _delete_account(data_t *resp, void *auth, char *account)
 		rc = db_query_commit(errors, auth);
 
 	FREE_NULL_LIST(removed);
+	FREE_NULL_LIST(assoc_cond.acct_list);
+	FREE_NULL_LIST(assoc_cond.user_list);
 
 	return rc;
 }
@@ -242,12 +301,17 @@ extern int op_handler_account(const char *context_id,
 			.assoc_cond = &assoc_cond,
 			.with_assocs = true,
 			.with_coords = true,
-			.with_deleted = true,
+			/* with_deleted defaults to false */
 		};
 
 		list_append(assoc_cond.acct_list, acct);
 
-		rc = _dump_accounts(resp, auth, &acct_cond);
+		/* Change search conditions based on parameters */
+		if (_parse_other_params(query, &acct_cond, errors) !=
+		    SLURM_SUCCESS)
+			rc = ESLURM_REST_INVALID_QUERY;
+		else
+			rc = _dump_accounts(resp, auth, &acct_cond);
 
 		FREE_NULL_LIST(assoc_cond.acct_list);
 
@@ -264,12 +328,16 @@ extern int op_handler_accounts(const char *context_id,
 			       http_request_method_t method, data_t *parameters,
 			       data_t *query, int tag, data_t *resp, void *auth)
 {
+	data_t *errors = populate_response_format(resp);
 	if (method == HTTP_REQUEST_GET) {
 		slurmdb_account_cond_t acct_cond = {
 			.with_assocs = true,
 			.with_coords = true,
-			.with_deleted = true,
+			/* with_deleted defaults to false */
 		};
+
+		/* Change search conditions based on parameters */
+		_parse_other_params(query, &acct_cond, errors);
 
 		return _dump_accounts(resp, auth, &acct_cond);
 	} else if (method == HTTP_REQUEST_POST) {

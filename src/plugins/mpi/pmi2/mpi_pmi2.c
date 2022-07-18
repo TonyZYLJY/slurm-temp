@@ -76,6 +76,7 @@
  */
 const char plugin_name[]        = "mpi PMI2 plugin";
 const char plugin_type[]        = "mpi/pmi2";
+const uint32_t plugin_id = MPI_PLUGIN_PMI2;
 const uint32_t plugin_version   = SLURM_VERSION_NUMBER;
 
 /*
@@ -173,4 +174,22 @@ extern int fini()
 	pmi2_stop_agent();
 	pmi2_cleanup_stepd();
 	return 0;
+}
+
+extern void mpi_p_conf_options(s_p_options_t **full_options, int *full_opt_cnt)
+{
+}
+
+extern void mpi_p_conf_set(s_p_hashtbl_t *tbl)
+{
+}
+
+extern s_p_hashtbl_t *mpi_p_conf_get(void)
+{
+	return NULL;
+}
+
+extern List mpi_p_conf_get_printable(void)
+{
+	return NULL;
 }

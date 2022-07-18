@@ -933,6 +933,15 @@ static int _process_command (int argc, char **argv)
 				 tag);
 		}
 		exit_flag = 1;
+	} else if (!xstrncasecmp(tag, "gethost", MAX(tag_len, 7))) {
+		if (argc == 3)
+			scontrol_gethost(argv[1], argv[2]);
+		else {
+			exit_code = 1;
+			fprintf(stderr,
+				"two arguments required for keyword:%s\n",
+				tag);
+		}
 	} else if (!xstrncasecmp(tag, "hash_file", MAX(tag_len, 15))) {
 		if (argc > 3) {
 			exit_code = 1;
@@ -1584,11 +1593,16 @@ static void _create_it(int argc, char **argv)
 		} else {
 			tag_len = strlen(tag);
 		}
-		if (!xstrncasecmp(tag, "ReservationName", MAX(tag_len, 3))) {
-			error_code = scontrol_create_res(argc, argv);
+		if (!xstrncasecmp(tag, "NodeName", MAX(tag_len, 3))) {
+			error_code = scontrol_create_node(argc, argv);
 			break;
-		} else if (!xstrncasecmp(tag, "PartitionName", MAX(tag_len, 3))) {
+		} else if (!xstrncasecmp(tag, "PartitionName",
+					 MAX(tag_len, 3))) {
 			error_code = scontrol_create_part(argc, argv);
+			break;
+		} else if (!xstrncasecmp(tag, "ReservationName",
+					 MAX(tag_len, 3))) {
+			error_code = scontrol_create_res(argc, argv);
 			break;
 		}
 	}
@@ -1636,7 +1650,16 @@ static void _delete_it(int argc, char **argv)
 	}
 
 	/* First identify the entity type to delete */
-	if (xstrncasecmp(tag, "PartitionName", MAX(tag_len, 3)) == 0) {
+	if (xstrncasecmp(tag, "NodeName", MAX(tag_len, 3)) == 0) {
+		update_node_msg_t node_msg = {0};
+		node_msg.node_names = val;
+		if (slurm_delete_node(&node_msg)) {
+			char errmsg[64];
+			snprintf(errmsg, 64, "delete_node %s", argv[0]);
+			slurm_perror(errmsg);
+			exit_code = 1;
+		}
+	} else if (xstrncasecmp(tag, "PartitionName", MAX(tag_len, 3)) == 0) {
 		delete_part_msg_t part_msg;
 		memset(&part_msg, 0, sizeof(part_msg));
 		part_msg.name = val;

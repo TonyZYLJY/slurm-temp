@@ -60,6 +60,7 @@
 #include "src/common/strlcpy.h"
 #include "src/common/tres_bind.h"
 #include "src/common/tres_frequency.h"
+#include "src/common/uid.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -108,9 +109,10 @@ const params_t job_params[] = {
 	{ "constraint", 'C' },
 	{ "constraints", 'C' },
 	{ "contiguous", LONG_OPT_CONTIGUOUS, true },
+	{ "container", LONG_OPT_CONTAINER },
 	{ "core_specification", 'S' },
 	{ "cores_per_socket", LONG_OPT_CORESPERSOCKET },
-	{ "cpu_binding hint", LONG_OPT_HINT },
+	{ "cpu_binding_hint", LONG_OPT_HINT },
 	{ "cpu_binding", LONG_OPT_CPU_BIND, true },
 	{ "cpu_frequency", LONG_OPT_CPU_FREQ },
 	{ "cpus_per_gpu", LONG_OPT_CPUS_PER_GPU },
@@ -156,13 +158,13 @@ const params_t job_params[] = {
 	{ "mail_type", LONG_OPT_MAIL_TYPE },
 	{ "mail_user", LONG_OPT_MAIL_USER },
 	{ "max_threads", 'T', true },
-	{ "msc_label", LONG_OPT_MCS_LABEL },
+	{ "mcs_label", LONG_OPT_MCS_LABEL },
 	{ "memory_binding", LONG_OPT_MEM_BIND },
-	{ "memory_per_CPU", LONG_OPT_MEM_PER_CPU },
-	{ "memory_per_GPU", LONG_OPT_MEM_PER_GPU },
+	{ "memory_per_cpu", LONG_OPT_MEM_PER_CPU },
+	{ "memory_per_gpu", LONG_OPT_MEM_PER_GPU },
 	{ "memory_per_node", LONG_OPT_MEM },
 	{ "message_timeout", LONG_OPT_MSG_TIMEOUT, true },
-	{ "minimum_CPUs_per_node", LONG_OPT_MINCPUS },
+	{ "minimum_cpus_per_node", LONG_OPT_MINCPUS },
 	{ "minimum_nodes", LONG_OPT_USE_MIN_NODES },
 	{ "mpi", LONG_OPT_MPI, true },
 	{ "multiple_program", LONG_OPT_MULTI, true },
@@ -225,10 +227,10 @@ const params_t job_params[] = {
 	{ "temporary_disk_per_node", LONG_OPT_TMP },
 	{ "test_only", LONG_OPT_TEST_ONLY },
 	{ "thread_specification", LONG_OPT_THREAD_SPEC },
-	{ "threads_per_Core", LONG_OPT_THREADSPERCORE },
+	{ "threads_per_core", LONG_OPT_THREADSPERCORE },
 	{ "threads", 'T', true },
 	{ "time_limit", 't' },
-	{ "time minimum", LONG_OPT_TIME_MIN },
+	{ "time_minimum", LONG_OPT_TIME_MIN },
 	/* Handler for LONG_OPT_TRES_PER_JOB never defined
 	 * { "TRES per job", LONG_OPT_TRES_PER_JOB, true },
 	 */
@@ -304,7 +306,7 @@ static data_for_each_cmd_t _per_job_param(const char *key, const data_t *data,
 	if ((rc = slurm_process_option_data(args->opt, p->optval, data,
 					    errors))) {
 		resp_error(errors, rc, "slurm_process_option_data",
-			   "Unknown key \"%s\"", lkey);
+			   "Unable to process key \"%s\"", lkey);
 		return DATA_FOR_EACH_FAIL;
 	}
 
@@ -564,6 +566,108 @@ static job_parse_list_t _parse_job_list(const data_t *jobs, char *script,
 	return rc;
 }
 
+static void _dump_node_res(data_t *dnodes, job_resources_t *j,
+			   const size_t node_inx, const char *nodename,
+			   const size_t sock_inx, size_t *bit_inx,
+			   const size_t array_size)
+{
+	size_t bit_reps;
+	data_t *dnode = data_set_dict(data_list_append(dnodes));
+	data_t *dsockets = data_set_dict(data_key_set(dnode, "sockets"));
+	data_t **sockets;
+
+	sockets = xcalloc(j->sockets_per_node[sock_inx], sizeof(*sockets));
+
+	/* per node */
+
+	data_set_string(data_key_set(dnode, "nodename"), nodename);
+
+	data_set_int(data_key_set(dnode, "cpus_used"), j->cpus_used[node_inx]);
+	data_set_int(data_key_set(dnode, "memory_used"),
+		     j->memory_used[node_inx]);
+	data_set_int(data_key_set(dnode, "memory_allocated"),
+		     j->memory_allocated[node_inx]);
+
+	/* set the used cores as found */
+
+	bit_reps = j->sockets_per_node[sock_inx] *
+		   j->cores_per_socket[sock_inx];
+	for (size_t i = 0; i < bit_reps; i++) {
+		size_t socket_inx = i / j->cores_per_socket[sock_inx];
+		size_t core_inx = i % j->cores_per_socket[sock_inx];
+
+		xassert(*bit_inx < array_size);
+
+		if (*bit_inx >= array_size) {
+			error("%s: unexpected invalid bit index:%zu/%zu",
+			      __func__, *bit_inx, array_size);
+			break;
+		}
+
+		if (bit_test(j->core_bitmap, *bit_inx)) {
+			data_t *dcores;
+
+			if (!sockets[socket_inx]) {
+				sockets[socket_inx] = data_set_dict(
+					data_key_set_int(dsockets, socket_inx));
+				dcores = data_set_dict(data_key_set(
+					sockets[socket_inx], "cores"));
+			} else {
+				dcores = data_key_get(sockets[socket_inx],
+						      "cores");
+			}
+
+			if (bit_test(j->core_bitmap_used, *bit_inx)) {
+				data_set_string(data_key_set_int(dcores,
+								 core_inx),
+						"allocated_and_in_use");
+			} else {
+				data_set_string(data_key_set_int(dcores,
+								 core_inx),
+						"allocated");
+			}
+		}
+
+		(*bit_inx)++;
+	}
+
+	xfree(sockets);
+}
+
+/* log_job_resources() used as an example */
+static void _dump_nodes_res(data_t *dnodes, job_resources_t *j)
+{
+	hostlist_t hl = NULL;
+	size_t bit_inx = 0;
+	size_t array_size;
+	size_t sock_inx = 0, sock_reps = 0;
+
+	if (!j->cores_per_socket || !j->nhosts) {
+		/* not enough info present */
+		return;
+	}
+
+	hl = hostlist_create(j->nodes);
+	array_size = bit_size(j->core_bitmap);
+
+	for (size_t node_inx = 0; node_inx < j->nhosts; node_inx++) {
+		char *nodename = hostlist_nth(hl, node_inx);
+
+		if (sock_reps >= j->sock_core_rep_count[sock_inx]) {
+			sock_inx++;
+			sock_reps = 0;
+		}
+		sock_reps++;
+
+		_dump_node_res(dnodes, j, node_inx, nodename, sock_inx,
+			       &bit_inx, array_size);
+
+		free(nodename);
+	}
+
+	FREE_NULL_HOSTLIST(hl);
+}
+
 static data_t *dump_job_info(slurm_job_info_t *job, data_t *jd)
 {
 	xassert(data_get_type(jd) == DATA_TYPE_NULL);
@@ -637,6 +741,7 @@ static data_t *dump_job_info(slurm_job_info_t *job, data_t *jd)
 			job->cluster_features);
 	data_set_string(data_key_set(jd, "command"), job->command);
 	data_set_string(data_key_set(jd, "comment"), job->comment);
+	data_set_string(data_key_set(jd, "container"), job->container);
 	if (job->contiguous != NO_VAL16)
 		data_set_bool(data_key_set(jd, "contiguous"),
 			      job->contiguous == 1);
@@ -714,83 +819,35 @@ static data_t *dump_job_info(slurm_job_info_t *job, data_t *jd)
 				job->gres_detail_str[i]);
 	if (job->group_id == NO_VAL)
 		data_set_null(data_key_set(jd, "group_id"));
-	else
+	else {
 		data_set_int(data_key_set(jd, "group_id"), job->group_id);
+		data_set_string_own(
+			data_key_set(jd, "group_name"),
+			gid_to_string_or_null((gid_t) job->group_id));
+	}
 	if (job->job_id == NO_VAL)
 		data_set_null(data_key_set(jd, "job_id"));
 	else
 		data_set_int(data_key_set(jd, "job_id"), job->job_id);
-	data_t *jrsc = data_key_set(jd, "job_resources");
-	data_set_dict(jrsc);
+
 	if (job->job_resrcs) {
 		/* based on log_job_resources() */
+		data_t *jrsc = data_set_dict(data_key_set(jd, "job_resources"));
 		job_resources_t *j = job->job_resrcs;
 		data_set_string(data_key_set(jrsc, "nodes"), j->nodes);
-		const size_t array_size = bit_size(j->core_bitmap);
-		size_t sock_inx = 0, sock_reps = 0, bit_inx = 0;
 
-		data_set_int(data_key_set(jrsc, "allocated_cpus"), j->ncpus);
+		if (slurm_conf.select_type_param & (CR_CORE|CR_SOCKET))
+			data_set_int(data_key_set(jrsc, "allocated_cores"),
+				     j->ncpus);
+		else if (slurm_conf.select_type_param & CR_CPU)
+			data_set_int(data_key_set(jrsc, "allocated_cpus"),
+				     j->ncpus);
+
 		data_set_int(data_key_set(jrsc, "allocated_hosts"), j->nhosts);
 
-		data_t *nodes = data_key_set(jrsc, "allocated_nodes");
-		data_set_dict(nodes);
-		for (size_t node_inx = 0; node_inx < j->nhosts; node_inx++) {
-			data_t *node = data_key_set_int(nodes, node_inx);
-			data_set_dict(node);
-			data_t *sockets = data_key_set(node, "sockets");
-			data_t *cores = data_key_set(node, "cores");
-			data_set_dict(sockets);
-			data_set_dict(cores);
-			const size_t bit_reps =
-				((size_t) j->sockets_per_node[sock_inx]) *
-				((size_t) j->cores_per_socket[sock_inx]);
-
-			if (sock_reps >= j->sock_core_rep_count[sock_inx]) {
-				sock_inx++;
-				sock_reps = 0;
-			}
-			sock_reps++;
-
-			if (j->memory_allocated)
-				data_set_int(data_key_set(node,
-							  "memory"),
-					     j->memory_allocated[node_inx]);
-
-			data_set_int(data_key_set(node, "cpus"),
-				     j->cpus[node_inx]);
-
-			for (size_t i = 0; i < bit_reps; i++) {
-				if (bit_inx >= array_size) {
-					error("%s: array size wrong", __func__);
-					xassert(false);
-					break;
-				}
-				if (bit_test(j->core_bitmap, bit_inx)) {
-					data_t *socket = data_key_set_int(
-						sockets,
-						(i /
-						 j->cores_per_socket[sock_inx]));
-					data_t *core = data_key_set_int(
-						cores,
-						(i %
-						 j->cores_per_socket[sock_inx]));
-
-					if (bit_test(j->core_bitmap_used,
-						     bit_inx)) {
-						data_set_string(socket,
-								"assigned");
-						data_set_string(core,
-								"assigned");
-					} else {
-						data_set_string(socket,
-								"unassigned");
-						data_set_string(core,
-								"unassigned");
-					}
-				}
-				bit_inx++;
-			}
-		}
+		_dump_nodes_res(
+			data_set_list(data_key_set(jrsc, "allocated_nodes")),
+			j);
 	}
 	data_set_string(data_key_set(jd, "job_state"),
 			job_state_string(job->job_state));
@@ -949,6 +1006,7 @@ static data_t *dump_job_info(slurm_job_info_t *job, data_t *jd)
 	data_set_int(data_key_set(jd, "suspend_time"), job->suspend_time);
 	data_set_string(data_key_set(jd, "system_comment"),
 			job->system_comment);
+	data_set_string(data_key_set(jd, "container"), job->container);
 	if (job->time_limit != INFINITE)
 		data_set_int(data_key_set(jd, "time_limit"), job->time_limit);
 	else
@@ -973,7 +1031,13 @@ static data_t *dump_job_info(slurm_job_info_t *job, data_t *jd)
 	data_set_string(data_key_set(jd, "tres_alloc_str"),
 			job->tres_alloc_str);
 	data_set_int(data_key_set(jd, "user_id"), job->user_id);
-	data_set_string(data_key_set(jd, "user_name"), job->user_name);
+	if (job->user_name) {
+		data_set_string(data_key_set(jd, "user_name"), job->user_name);
+	} else {
+		data_set_string_own(
+			data_key_set(jd, "user_name"),
+			uid_to_string_or_null((uid_t) job->user_id));
+	}
 	/* wait4switch intentionally omitted */
 	data_set_string(data_key_set(jd, "wckey"), job->wckey);
 	data_set_string(data_key_set(jd, "current_working_directory"),

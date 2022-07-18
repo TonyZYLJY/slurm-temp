@@ -1090,43 +1090,7 @@ static slurm_cli_opt_t slurm_opt_cores_per_socket = {
 	.reset_each_pass = true,
 };
 
-static int arg_set_cpu_bind(slurm_opt_t *opt, const char *arg)
-{
-	if (!opt->srun_opt)
-		return SLURM_ERROR;
-
-	if (slurm_verify_cpu_bind(arg, &opt->srun_opt->cpu_bind,
-				  &opt->srun_opt->cpu_bind_type))
-		return SLURM_ERROR;
-
-	return SLURM_SUCCESS;
-}
-static char *arg_get_cpu_bind(slurm_opt_t *opt)
-{
-	char tmp[100];
-
-	if (!opt->srun_opt)
-		return xstrdup("invalid-context");
-
-	slurm_sprint_cpu_bind_type(tmp, opt->srun_opt->cpu_bind_type);
-
-	return xstrdup(tmp);
-}
-static void arg_reset_cpu_bind(slurm_opt_t *opt)
-{
-	if (opt->srun_opt) {
-		bool cpu_bind_verbose = false;
-		if (opt->srun_opt->cpu_bind_type & CPU_BIND_VERBOSE)
-			cpu_bind_verbose = true;
-
-		xfree(opt->srun_opt->cpu_bind);
-		opt->srun_opt->cpu_bind_type = 0;
-		if (cpu_bind_verbose)
-			slurm_verify_cpu_bind("verbose",
-					      &opt->srun_opt->cpu_bind,
-					      &opt->srun_opt->cpu_bind_type);
-	}
-}
+COMMON_SRUN_STRING_OPTION(cpu_bind);
 static slurm_cli_opt_t slurm_opt_cpu_bind = {
 	.name = "cpu-bind",
 	.has_arg = required_argument,
@@ -3443,16 +3407,12 @@ static int arg_set_overlap(slurm_opt_t *opt, const char *arg)
 	if (!opt->srun_opt)
 		return SLURM_SUCCESS;
 
-	opt->srun_opt->overlap_force = false;
-	if (arg) {
-		if (!xstrcmp(arg, "force")) {
-			opt->srun_opt->overlap_force = true;
-		} else {
-			error("Invalid argument \"%s\" to --overlap", arg);
-			return SLURM_ERROR;
-		}
-	}
-
+	/*
+	 * overlap_force means that the step will overlap all resources
+	 * (CPUs, memory, GRES).
+	 * Make this the only behavior for --overlap.
+	 */
+	opt->srun_opt->overlap_force = true;
 	opt->srun_opt->exclusive = false;
 
 	return SLURM_SUCCESS;
@@ -5809,20 +5769,22 @@ static void _validate_threads_per_core_option(slurm_opt_t *opt)
 		return;
 
 	if (!slurm_option_isset(opt, "cpu-bind")) {
-		verbose("Setting --cpu-bind=threads as a default of --threads-per-core use");
+		if (opt->verbose)
+			info("Setting --cpu-bind=threads as a default of --threads-per-core use");
 		if (opt->srun_opt)
 			slurm_verify_cpu_bind("threads",
 					      &opt->srun_opt->cpu_bind,
 					      &opt->srun_opt->cpu_bind_type);
 	} else if (opt->srun_opt &&
-		   (opt->srun_opt->cpu_bind_type == CPU_BIND_VERBOSE)) {
-		verbose("Setting --cpu-bind=threads,verbose as a default of --threads-per-core use");
+		   !xstrcmp(opt->srun_opt->cpu_bind, "verbose")) {
+		if (opt->verbose)
+			info("Setting --cpu-bind=threads,verbose as a default of --threads-per-core use");
 		if (opt->srun_opt)
 			slurm_verify_cpu_bind("threads,verbose",
 					      &opt->srun_opt->cpu_bind,
 					      &opt->srun_opt->cpu_bind_type);
-	} else {
-		debug3("Not setting --cpu-bind=threads because of --threads-per-core since --cpu-bind already set by cli option or environment variable");
+	} else if (opt->verbose > 1) {
+		info("Not setting --cpu-bind=threads because of --threads-per-core since --cpu-bind already set by cli option or environment variable");
 	}
 }
 

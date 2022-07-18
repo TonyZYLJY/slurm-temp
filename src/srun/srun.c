@@ -128,7 +128,7 @@ static void  _launch_app(srun_job_t *job, List srun_job_list, bool got_alloc);
 static void *_launch_one_app(void *data);
 static void  _pty_restore(void);
 static void  _set_exit_code(void);
-static void  _set_node_alias(void);
+static void  _set_node_alias(srun_job_t *job, List srun_job_list);
 static void  _setup_env_working_cluster(void);
 static void  _setup_job_env(srun_job_t *job, List srun_job_list,
 			    bool got_alloc);
@@ -189,8 +189,10 @@ int srun(int ac, char **av)
 		if (!_enable_het_job_steps())
 			fatal("Job steps that span multiple components of a heterogeneous job are not currently supported");
 		create_srun_job((void **) &srun_job_list, &got_alloc, 0, 1);
-	} else
+	} else{
 		create_srun_job((void **) &job, &got_alloc, 0, 1);
+		//printf("step id is %d, cpu count is: %d\n", job->step_id.job_id, job->cpu_count);
+	}
 
 	_setup_job_env(job, srun_job_list, got_alloc);
 
@@ -209,7 +211,7 @@ int srun(int ac, char **av)
 		log_alter(logopt, 0, NULL);
 	}
 
-	_set_node_alias();
+	_set_node_alias(job, srun_job_list);
 	_launch_app(job, srun_job_list, got_alloc);
 
 	if ((global_rc & 0xff) == SIG_OOM)
@@ -228,6 +230,7 @@ int srun(int ac, char **av)
 
 
 #ifdef MEMORY_LEAK_DEBUG
+	mpi_fini();
 	select_g_fini();
 	switch_fini();
 	slurm_reset_all_options(&opt, false);
@@ -373,6 +376,7 @@ fini:	hostlist_destroy(in_hl);
 	xfree(out_tids);
 }
 
+// launch job from srun
 static void _launch_app(srun_job_t *job, List srun_job_list, bool got_alloc)
 {
 	ListIterator opt_iter, job_iter;
@@ -861,33 +865,30 @@ static void _set_exit_code(void)
 	}
 }
 
-static void _set_node_alias(void)
+static int _foreach_set_node_alias(void *x, void *arg)
 {
-	char *aliases, *save_ptr = NULL, *tmp;
-	char *addr, *hostname, *slurm_name;
+	srun_job_t *job = x;
+	char *alias_list = NULL;
 
-	tmp = getenv("SLURM_NODE_ALIASES");
-	if (!tmp)
-		return;
-	aliases = xstrdup(tmp);
-	slurm_name = strtok_r(aliases, ":", &save_ptr);
-	while (slurm_name) {
-		/* Checking for [] around address */
-		if (save_ptr[0] == '[') {
-			save_ptr++;
-			addr = strtok_r(NULL, "]", &save_ptr);
-			save_ptr++;
-		} else
-			addr = strtok_r(NULL, ":", &save_ptr);
-		if (!addr)
-			break;
-		slurm_reset_alias(slurm_name, addr, addr);
-		hostname = strtok_r(NULL, ",", &save_ptr);
-		if (!hostname)
-			break;
-		slurm_name = strtok_r(NULL, ":", &save_ptr);
-	}
-	xfree(aliases);
+	xassert(job);
+
+	if (job &&
+	    job->step_ctx &&
+	    job->step_ctx->step_resp &&
+	    job->step_ctx->step_resp->cred &&
+	    (alias_list = slurm_cred_get_arg(job->step_ctx->step_resp->cred,
+					     CRED_ARG_JOB_ALIAS_LIST)))
+		set_nodes_alias(alias_list);
+
+	return SLURM_SUCCESS;
+}
+
+static void _set_node_alias(srun_job_t *job, List srun_job_list)
+{
+	if (srun_job_list)
+		list_for_each(srun_job_list, _foreach_set_node_alias, NULL);
+	else if (job)
+		_foreach_set_node_alias(job, NULL);
 }
 
 static void _pty_restore(void)

@@ -51,13 +51,12 @@
           {
             "name": "job_id",
             "in": "path",
-            "description": "Slurm Job ID",
+            "description": "Slurm JobID",
             "required": true,
             "style": "simple",
             "explode": false,
             "schema": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string"
             }
           }
         ],
@@ -345,6 +344,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted QOSs. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ]
       }
@@ -355,6 +365,19 @@
           "slurm"
         ],
         "operationId": "get_qos",
+        "parameters": [
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted QOSs. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -388,6 +411,61 @@
           }
         },
         "summary": "Get QOS list"
+      },
+      "post": {
+        "tags": [
+          "slurm"
+        ],
+        "operationId": "update_qos",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dbv0.0.38_response_qos"
+                }
+              },
+              "application/x-yaml": {
+                "schema": {
+                  "$ref": "#/components/schemas/dbv0.0.38_response_qos"
+                }
+              }
+            },
+            "description": "QOS update response"
+          },
+          "default": {
+            "description": "Unable to update QOSs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/dbv0.0.38_errors"
+                }
+              },
+              "application/x-yaml": {
+                "schema": {
+                  "$ref": "#/components/schemas/dbv0.0.38_errors"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "description": "Add or update QOSs",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dbv0.0.38_update_qos"
+              }
+            },
+            "application/x-yaml": {
+              "schema": {
+                "$ref": "#/components/schemas/dbv0.0.38_update_qos"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Set QOS info"
       }
     },
     "/associations/": {
@@ -432,42 +510,173 @@
       },
       "get": {
         "tags": [
-          "slurm"
-        ],
-        "operationId": "get_associations",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_associations_info"
-                }
-              },
-              "application/x-yaml": {
-                "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_associations_info"
-                }
-              }
-            },
-            "description": "List of associations"
-          },
-          "default": {
-            "description": "Association not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_errors"
-                }
-              },
-              "application/x-yaml": {
-                "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_errors"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Get association list"
+	  "slurm"
+	],
+	"operationId": "get_associations",
+	"parameters": [
+	  {
+	    "name": "cluster",
+	    "in": "query",
+	    "description": "Cluster name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "account",
+	    "in": "query",
+	    "description": "Account name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "user",
+	    "in": "query",
+	    "description": "User name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "partition",
+	    "in": "query",
+	    "description": "Partition Name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  }
+	],
+	"responses": {
+	  "200": {
+	    "content": {
+	      "application/json": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_associations_info"
+		}
+	      },
+	      "application/x-yaml": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_associations_info"
+		}
+	      }
+	    },
+	    "description": "List of associations"
+	  },
+	  "default": {
+	    "description": "Association not found",
+	    "content": {
+	      "application/json": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_errors"
+		}
+	      },
+	      "application/x-yaml": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_errors"
+		}
+	      }
+	    }
+	  }
+	},
+	"summary": "Get association list"
+      },
+      "delete": {
+	"tags": [
+	  "slurm"
+	],
+	"operationId": "delete_associations",
+	"parameters": [
+	  {
+	    "name": "cluster",
+	    "in": "query",
+	    "description": "Cluster name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "account",
+	    "in": "query",
+	    "description": "Account name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "user",
+	    "in": "query",
+	    "description": "User name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  },
+	  {
+	    "name": "partition",
+	    "in": "query",
+	    "description": "Partition Name",
+	    "required": false,
+	    "style": "form",
+	    "explode": false,
+	    "schema": {
+	      "type": "string"
+	    }
+	  }
+	],
+	"responses": {
+	  "200": {
+	    "content": {
+	      "application/json": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_response_associations_delete"
+		}
+	      },
+	      "application/x-yaml": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_response_associations_delete"
+		}
+	      }
+	    },
+	    "description": "Delete associations"
+	  },
+	  "default": {
+	    "description": "Associations not found or unable to delete association",
+	    "content": {
+	      "application/json": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_errors"
+		}
+	      },
+	      "application/x-yaml": {
+		"schema": {
+		  "$ref": "#/components/schemas/dbv0.0.38_errors"
+		}
+	      }
+	    }
+	  }
+	},
+	"summary": "Delete associations"
       }
     },
     "/association/": {
@@ -577,7 +786,7 @@
             "name": "account",
             "in": "query",
             "description": "Account name",
-            "required": true,
+	    "required": false,
             "style": "form",
             "explode": false,
             "schema": {
@@ -588,7 +797,7 @@
             "name": "user",
             "in": "query",
             "description": "User name",
-            "required": true,
+	    "required": false,
             "style": "form",
             "explode": false,
             "schema": {
@@ -612,12 +821,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_response_association_delete"
+		  "$ref": "#/components/schemas/dbv0.0.38_response_associations_delete"
                 }
               },
               "application/x-yaml": {
                 "schema": {
-                  "$ref": "#/components/schemas/dbv0.0.38_response_association_delete"
+		  "$ref": "#/components/schemas/dbv0.0.38_response_associations_delete"
                 }
               }
             },
@@ -744,6 +953,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted users. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ]
       }
@@ -841,7 +1061,20 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted users. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ]
       }
     },
     "/cluster/{cluster_name}": {
@@ -1334,6 +1567,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted accounts. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ]
       }
@@ -1344,6 +1588,19 @@
           "slurm"
         ],
         "operationId": "get_accounts",
+        "parameters": [
+          {
+            "name": "with_deleted",
+            "in": "query",
+            "description": "Include deleted accounts. False by default.",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1894,99 +2151,104 @@
               "$ref": "#/components/schemas/dbv0.0.38_error"
             }
           },
-          "time_start": {
-            "type": "integer",
-            "description": "Unix timestamp of start time"
-          },
-          "rollups": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "Rollup statistics",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "description": "Type of rollup"
-                },
-                "last_run": {
-                  "type": "integer",
-                  "description": "Timestamp of last rollup"
-                },
-                "last_cycle": {
-                  "type": "integer",
-                  "description": "Timestamp of last cycle"
-                },
-                "max_cycle": {
-                  "type": "integer",
-                  "description": "Max time of all cycles"
-                },
-                "total_time": {
-                  "type": "integer",
-                  "description": "Total time (s) spent doing rollup"
-                },
-                "mean_cycles": {
-                  "type": "integer",
-                  "description": "Average time (s) of cycle"
-                }
-              }
-            }
-          },
-          "RPCs": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "Statistics by RPC type",
-              "properties": {
-                "rpc": {
-                  "type": "string",
-                  "description": "RPC type"
-                },
-                "count": {
-                  "type": "integer",
-                  "description": "Number of RPCs"
-                },
-                "time": {
+          "statistics": {
+            "type": "object",
+            "properties": {
+              "time_start": {
+                "type": "integer",
+                "description": "Unix timestamp of start time"
+              },
+              "rollups": {
+                "type": "array",
+                "items": {
                   "type": "object",
-                  "description": "Time values",
+                  "description": "Rollup statistics",
                   "properties": {
-                    "average": {
-                      "type": "integer",
-                      "description": "Average time spent processing this RPC type"
+                    "type": {
+                      "type": "string",
+                      "description": "Type of rollup"
                     },
-                    "total": {
+                    "last_run": {
                       "type": "integer",
-                      "description": "Total time spent processing this RPC type"
+                      "description": "Timestamp of last rollup"
+                    },
+                    "last_cycle": {
+                      "type": "integer",
+                      "description": "Timestamp of last cycle"
+                    },
+                    "max_cycle": {
+                      "type": "integer",
+                      "description": "Max time of all cycles"
+                    },
+                    "total_time": {
+                      "type": "integer",
+                      "description": "Total time (s) spent doing rollup"
+                    },
+                    "mean_cycles": {
+                      "type": "integer",
+                      "description": "Average time (s) of cycle"
                     }
                   }
                 }
-              }
-            }
-          },
-          "users": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "Statistics by user RPCs",
-              "properties": {
-                "user": {
-                  "type": "string",
-                  "description": "User name"
-                },
-                "count": {
-                  "type": "integer",
-                  "description": "Number of RPCs"
-                },
-                "time": {
+              },
+              "RPCs": {
+                "type": "array",
+                "items": {
                   "type": "object",
-                  "description": "Time values",
+                  "description": "Statistics by RPC type",
                   "properties": {
-                    "average": {
-                      "type": "integer",
-                      "description": "Average time spent processing each user RPC"
+                    "rpc": {
+                      "type": "string",
+                      "description": "RPC type"
                     },
-                    "total": {
+                    "count": {
                       "type": "integer",
-                      "description": "Total time spent processing each user RPC"
+                      "description": "Number of RPCs"
+                    },
+                    "time": {
+                      "type": "object",
+                      "description": "Time values",
+                      "properties": {
+                        "average": {
+                          "type": "integer",
+                          "description": "Average time spent processing this RPC type"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "Total time spent processing this RPC type"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "users": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "description": "Statistics by user RPCs",
+                  "properties": {
+                    "user": {
+                      "type": "string",
+                      "description": "User name"
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Number of RPCs"
+                    },
+                    "time": {
+                      "type": "object",
+                      "description": "Time values",
+                      "properties": {
+                        "average": {
+                          "type": "integer",
+                          "description": "Average time spent processing each user RPC"
+                        },
+                        "total": {
+                          "type": "integer",
+                          "description": "Total time spent processing each user RPC"
+                        }
+                      }
                     }
                   }
                 }
@@ -2335,6 +2597,14 @@
               }
             }
           },
+          "flags": {
+            "type": "array",
+            "description": "List of properties of user",
+            "items": {
+              "type": "string",
+              "description": "String of property name"
+            }
+          },
           "name": {
             "type": "string",
             "description": "User name"
@@ -2374,28 +2644,6 @@
             "description": "Slurm errors",
             "items": {
               "$ref": "#/components/schemas/dbv0.0.38_error"
-            }
-          }
-        }
-      },
-      "dbv0.0.38_response_association_delete": {
-        "type": "object",
-        "properties": {
-          "meta": {
-            "$ref": "#/components/schemas/v0.0.38_meta"
-          },
-          "errors": {
-            "type": "array",
-            "description": "Slurm errors",
-            "items": {
-              "$ref": "#/components/schemas/dbv0.0.38_error"
-            }
-          },
-          "removed_associations": {
-            "type": "array",
-            "description": "the associations",
-            "items": {
-              "type": "string"
             }
           }
         }
@@ -2856,6 +3104,21 @@
           }
         }
       },
+      "dbv0.0.38_response_qos": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/v0.0.38_meta"
+          },
+          "errors": {
+            "type": "array",
+            "description": "Slurm errors",
+            "items": {
+              "$ref": "#/components/schemas/dbv0.0.38_error"
+            }
+          }
+        }
+      },
       "dbv0.0.38_response_qos_delete": {
         "type": "object",
         "properties": {
@@ -3279,6 +3542,10 @@
           "working_directory": {
             "type": "string",
             "description": "Directory where job was initially started"
+          },
+          "container": {
+            "type": "string",
+            "description": "absolute path to OCI container bundle"
           }
         }
       },
@@ -3718,6 +3985,16 @@
           }
         }
       },
+      "dbv0.0.38_update_qos": {
+        "properties": {
+          "qos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/dbv0.0.38_qos"
+            }
+          }
+        }
+      },
       "dbv0.0.38_update_account": {
         "properties": {
           "accounts": {
@@ -3735,6 +4012,28 @@
             "$ref": "#/components/schemas/dbv0.0.38_cluster_info"
           }
         }
+      },
+      "dbv0.0.38_response_associations_delete": {
+	"type": "object",
+	"properties": {
+	  "meta": {
+	    "$ref": "#/components/schemas/v0.0.38_meta"
+	  },
+	  "errors": {
+	    "type": "array",
+	    "description": "Slurm errors",
+	    "items": {
+	      "$ref": "#/components/schemas/dbv0.0.38_error"
+	    }
+	  },
+	  "removed_associations": {
+	    "type": "array",
+	    "description": "the associations",
+	    "items": {
+	      "type": "string"
+	    }
+	  }
+	}
       }
     }
   }

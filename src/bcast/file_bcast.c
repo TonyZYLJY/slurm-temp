@@ -113,8 +113,8 @@ static int _file_state(struct bcast_parameters *params)
 	}
 
 	verbose("modes    = %o", (unsigned int) f_stat.st_mode);
-	verbose("uid      = %d", (int) f_stat.st_uid);
-	verbose("gid      = %d", (int) f_stat.st_gid);
+	verbose("uid      = %u", f_stat.st_uid);
+	verbose("gid      = %u", f_stat.st_gid);
 	verbose("atime    = %s", slurm_ctime2(&f_stat.st_atime));
 	verbose("mtime    = %s", slurm_ctime2(&f_stat.st_mtime));
 	verbose("ctime    = %s", slurm_ctime2(&f_stat.st_ctime));
@@ -174,6 +174,7 @@ static int _file_bcast(struct bcast_parameters *params,
 	slurm_msg_t msg;
 
 	slurm_msg_t_init(&msg);
+	slurm_msg_set_r_uid(&msg, SLURM_AUTH_UID_ANY);
 	msg.data = bcast_msg;
 	msg.flags = USE_BCAST_NETWORK;
 	msg.forward.tree_width = params->fanout;

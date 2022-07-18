@@ -672,6 +672,7 @@ enum switch_plugin_type {
 	SWITCH_PLUGIN_GENERIC      = 101, /* Generic */
 	SWITCH_PLUGIN_CRAY         = 102, /* Cray */
 	/* 103 unused (originally used for NRT) */
+	SWITCH_PLUGIN_SLINGSHOT    = 104, /* HPE Slingshot */
 };
 
 enum select_jobdata_type {
@@ -955,7 +956,7 @@ enum node_states {
 #define NODE_STATE_REBOOT_REQUESTED SLURM_BIT(16) /* node reboot requested */
 #define NODE_STATE_REBOOT_CANCEL SLURM_BIT(17) /* cancel pending reboot */
 #define NODE_STATE_POWERING_DOWN SLURM_BIT(18) /* node is powering down */
-#define NODE_STATE_DYNAMIC    SLURM_BIT(19) /* node is dynamically assigned */
+#define NODE_STATE_DYNAMIC_FUTURE SLURM_BIT(19) /* dynamic future node */
 #define NODE_STATE_REBOOT_ISSUED SLURM_BIT(20) /* node reboot passed to agent */
 #define NODE_STATE_PLANNED    SLURM_BIT(21) /* node scheduled for a job in the
 					     * future */
@@ -964,6 +965,7 @@ enum node_states {
 #define NODE_STATE_POWER_DOWN SLURM_BIT(23) /* manual node power down */
 #define NODE_STATE_POWER_UP SLURM_BIT(24) /* manual node power up */
 #define NODE_STATE_POWER_DRAIN SLURM_BIT(25) /* signal power down asap */
+#define NODE_STATE_DYNAMIC_NORM SLURM_BIT(26) /* dynamic norm node */
 
 /* used to define the size of the credential.signature size
  * used to define the key size of the io_stream_header_t
@@ -1829,7 +1831,7 @@ typedef struct job_info {
 	char *sched_nodes;	/* list of nodes scheduled to be used for job */
 	dynamic_plugin_data_t *select_jobinfo; /* opaque data type,
 						* process using
-						* slurm_get_select_jobinfo()
+						* select_g_select_jobinfo_*
 						*/
 	char *selinux_context;
 	uint16_t shared;	/* 1 if job can share nodes with other jobs */
@@ -1870,6 +1872,8 @@ typedef struct job_info {
 	char *work_dir;		/* pathname of working directory */
 } slurm_job_info_t;
 
+typedef slurm_job_info_t job_info_t;
+
 typedef struct priority_factors_object {
 	char *cluster_name;	/* Cluster name ONLY set in federation */
 	uint32_t job_id;
@@ -1896,18 +1900,6 @@ typedef struct priority_factors_object {
 typedef struct priority_factors_response_msg {
 	List	 priority_factors_list;	/* priority_factors_object_t list */
 } priority_factors_response_msg_t;
-
-#ifndef __PERMAPI__H__
-/* If on an IBM PERCS machine the libpermapi.so file we generate in
- * the switch/nrt plugin will need to link to this file and the
- * permapi.h file which both have a job_info_t structure defined in
- * it.  So to avoid conflict only define job_info_t if we haven't
- * included that file first.  Then when in the libpermapi environment
- * we can use slurm_job_info_t to access the job_info_t data.  If not
- * in that environment we should never know anything changed.
- */
-typedef slurm_job_info_t job_info_t;
-#endif
 
 typedef struct job_info_msg {
 	time_t last_backfill;	/* time of late backfill run */
@@ -2164,7 +2156,7 @@ typedef struct {
 	time_t run_time;	/* net run time (factor out time suspended) */
 	dynamic_plugin_data_t *select_jobinfo; /* opaque data type,
 						* process using
-						* slurm_get_select_jobinfo()
+						* select_g_select_jobinfo_*
 						*/
 	char *srun_host;	/* host of srun command */
 	uint32_t srun_pid;	/* PID of srun command */
@@ -2409,6 +2401,7 @@ typedef struct partition_info {
 				 * start_range_1, end_range_1,
 				 * start_range_2, .., -1  */
 	char *nodes;		/* list names of nodes in partition */
+	char *nodesets;		/* list of nodesets used by partition */
 	uint16_t over_time_limit; /* job's time limit can be exceeded by this
 				   * number of minutes before cancellation */
 	uint16_t preempt_mode;	/* See PREEMPT_MODE_* in slurm/slurm.h */
@@ -2463,7 +2456,7 @@ typedef struct resource_allocation_response_msg {
 	char *resv_name;         /* allocation reservation */
 	dynamic_plugin_data_t *select_jobinfo;	/* opaque data structure,
 						 * use
-						 * slurm_get_select_jobinfo()
+						 * select_g_select_jobinfo_*
 						 * to access contents */
 	void *working_cluster_rec; /* Cluster to direct remaining messages to.
 				    * slurmdb_cluster_rec_t* because slurm.h
@@ -2552,9 +2545,12 @@ typedef struct will_run_response_msg {
 						  * reservation without
 						  * deleting the
 						  * reservation proper */
+#define RESERVE_FLAG_HOURLY	   SLURM_BIT(35) /* Set HOURLY flag */
+#define RESERVE_FLAG_NO_HOURLY	   SLURM_BIT(36) /* Clear HOURLY flag */
 
-#define RESERVE_REOCCURING	(RESERVE_FLAG_DAILY | RESERVE_FLAG_WEEKLY | \
-				 RESERVE_FLAG_WEEKDAY | RESERVE_FLAG_WEEKEND)
+#define RESERVE_REOCCURING	(RESERVE_FLAG_HOURLY | RESERVE_FLAG_DAILY | \
+				 RESERVE_FLAG_WEEKLY | RESERVE_FLAG_WEEKDAY | \
+				 RESERVE_FLAG_WEEKEND)
 
 typedef struct resv_core_spec {
 	char *node_name;	/* Name of reserved node */
@@ -2650,7 +2646,7 @@ typedef struct reservation_name_msg {
 						    * slurm.conf files checksum
 						    * mismatch */
 #define DEBUG_FLAG_GRES		SLURM_BIT(6) /* Generic Resource info */
-/* #define 			SLURM_BIT(7) /\* UNUSED *\/ */
+#define DEBUG_FLAG_MPI		SLURM_BIT(7) /* MPI debug */
 #define DEBUG_FLAG_DATA 	SLURM_BIT(8) /* data_t logging */
 #define DEBUG_FLAG_WORKQ 	SLURM_BIT(9) /* Work Queue */
 #define DEBUG_FLAG_NET		SLURM_BIT(10) /* Network logging */
@@ -2853,7 +2849,9 @@ typedef struct {
 	uint16_t job_file_append; /* if set, append to stdout/err file */
 	uint16_t job_requeue;	/* If set, jobs get requeued on node failre */
 	char *job_submit_plugins;  /* List of job_submit plugins to use */
-	uint16_t keep_alive_time;  /* Keep alive time for srun I/O sockets */
+	uint32_t keepalive_interval;  /* Interval between keepalive probes */
+	uint32_t keepalive_probes;  /* Number of keepalive probe attempts */
+	uint32_t keepalive_time;  /* Keep alive time for srun I/O sockets */
 	uint16_t kill_on_bad_exit; /* If set, the job will be
 				    * terminated immediately when one of
 				    * the processes is aborted or crashed */
@@ -2871,12 +2869,14 @@ typedef struct {
 	uint32_t max_job_cnt;	/* maximum number of active jobs */
 	uint32_t max_job_id;	/* maximum job id before using first_job_id */
 	uint64_t max_mem_per_cpu; /* maximum MB memory per allocated CPU */
+	uint32_t max_node_cnt;  /* max number of static + dynamic nodes */
 	uint32_t max_step_cnt;	/* maximum number of steps per job */
 	uint16_t max_tasks_per_node; /* maximum tasks per node */
 	char *mcs_plugin; /* mcs plugin type */
 	char *mcs_plugin_params; /* mcs plugin parameters */
 	uint32_t min_job_age;	/* COMPLETED jobs over this age (secs)
 				 * purged from in memory records */
+	void *mpi_conf;		/* MPI support config file */
 	char *mpi_default;	/* Default version of MPI in use */
 	char *mpi_params;	/* MPI parameters */
 	uint16_t msg_timeout;	/* message timeout */
@@ -4259,6 +4259,13 @@ extern char *slurm_sprint_node_table(node_info_t *node_ptr,
 void slurm_init_update_node_msg(update_node_msg_t *update_node_msg);
 
 /*
+ * slurm_create_node - issue RPC to create node(s), only usable by user root
+ * IN node_msg - node definition(s)
+ * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set
+ */
+extern int slurm_create_node(update_node_msg_t *node_msg);
+
+/*
  * slurm_update_node - issue RPC to a node's configuration per request,
  *	only usable by user root
  * IN node_msg - description of node updates
@@ -4266,6 +4273,12 @@ void slurm_init_update_node_msg(update_node_msg_t *update_node_msg);
  */
 extern int slurm_update_node(update_node_msg_t *node_msg);
 
+/*
+ * slurm_delete_node - issue RPC to delete a node, only usable by user root
+ * IN node_msg - use to pass nodelist of names to delete
+ * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set
+ */
+int slurm_delete_node(update_node_msg_t *node_msg);
 
 /*****************************************************************************\
  *	SLURM FRONT_END CONFIGURATION READ/PRINT/UPDATE FUNCTIONS

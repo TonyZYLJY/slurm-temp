@@ -48,6 +48,8 @@
 #include "macros.h"
 #include "xassert.h"
 #include "xmalloc.h"
+//#include "src/slurmctld/job_scheduler.h"
+//#include "src/slurmctld/job_scheduler.c"
 
 /*
 ** Define slurm-specific aliases for use by plugins, see slurm_xlator.h
@@ -62,6 +64,7 @@ strong_alias(list_append,	slurm_list_append);
 strong_alias(list_append_list,	slurm_list_append_list);
 strong_alias(list_transfer,	slurm_list_transfer);
 strong_alias(list_transfer_max,	slurm_list_transfer_max);
+strong_alias(list_transfer_unique,	slurm_list_transfer_unique);
 strong_alias(list_prepend,	slurm_list_prepend);
 strong_alias(list_find_first,	slurm_list_find_first);
 strong_alias(list_find_first_ro, slurm_list_find_first_ro);
@@ -140,6 +143,7 @@ static void *_list_node_create(List l, ListNode *pp, void *x);
 static void *_list_node_destroy(List l, ListNode *pp);
 static void *_list_pop_locked(List l);
 static void *_list_append_locked(List l, void *x);
+static void *_list_find_first_locked(List l, ListFindF f, void *key);
 
 #ifndef NDEBUG
 static int _list_mutex_is_locked(pthread_rwlock_t *mutex);
@@ -239,21 +243,9 @@ int list_count(List l)
 List list_shallow_copy(List l)
 {
 	List m = list_create(NULL);
-	ListNode p;
 
-	xassert(l != NULL);
-	xassert(l->magic == LIST_MAGIC);
-	slurm_rwlock_wrlock(&l->mutex);
-	slurm_rwlock_wrlock(&m->mutex);
+	(void) list_append_list(m, l);
 
-	p = l->head;
-	while (p) {
-		_list_append_locked(m, p->data);
-		p = p->next;
-	}
-
-	slurm_rwlock_unlock(&m->mutex);
-	slurm_rwlock_unlock(&l->mutex);
 	return m;
 }
 
@@ -264,6 +256,7 @@ list_append (List l, void *x)
 {
 	void *v;
 
+	//printf("in list append\n\n");
 	xassert(l != NULL);
 	xassert(x != NULL);
 	xassert(l->magic == LIST_MAGIC);
@@ -279,21 +272,27 @@ list_append (List l, void *x)
 int
 list_append_list (List l, List sub)
 {
-	ListIterator itr;
-	void *v;
 	int n = 0;
+	ListNode p;
 
 	xassert(l != NULL);
+	xassert(l->magic == LIST_MAGIC);
 	xassert(l->fDel == NULL);
 	xassert(sub != NULL);
-	itr = list_iterator_create(sub);
-	while((v = list_next(itr))) {
-		if (list_append(l, v))
-			n++;
-		else
+	xassert(sub->magic == LIST_MAGIC);
+
+	slurm_rwlock_wrlock(&l->mutex);
+	slurm_rwlock_wrlock(&sub->mutex);
+	p = sub->head;
+	while (p) {
+		if (!_list_append_locked(l, p->data))
 			break;
+		n++;
+		p = p->next;
 	}
-	list_iterator_destroy(itr);
+
+	slurm_rwlock_unlock(&sub->mutex);
+	slurm_rwlock_unlock(&l->mutex);
 
 	return n;
 }
@@ -316,10 +315,14 @@ int list_transfer_max(List l, List sub, int max)
 	xassert(sub->magic == LIST_MAGIC);
 	xassert(l->fDel == sub->fDel);
 
-	while ((!max || n <= max) && (v = list_pop(sub))) {
-		list_append(l, v);
+	slurm_rwlock_wrlock(&l->mutex);
+	slurm_rwlock_wrlock(&sub->mutex);
+	while ((!max || n <= max) && (v = _list_pop_locked(sub))) {
+		_list_append_locked(l, v);
 		n++;
 	}
+	slurm_rwlock_unlock(&sub->mutex);
+	slurm_rwlock_unlock(&l->mutex);
 
 	return n;
 }
@@ -334,6 +337,52 @@ int list_transfer_max(List l, List sub, int max)
 int list_transfer(List l, List sub)
 {
 	return list_transfer_max(l, sub, 0);
+}
+
+/*
+ *  Pop off elements in list [sub] to [l], unless already in [l].
+ *  Note: list [l] must have the same destroy function as list [sub].
+ *  Note: list [l] could contain repeated elements, but those aren't removed.
+ *  Note: list [sub] will be returned with repeated elements or empty,
+ *        but never destroyed.
+ *  Returns a count of the number of items added to list [l].
+ */
+int list_transfer_unique(List l, ListFindF f, List sub)
+{
+	ListNode *pp;
+	void *v;
+	int n = 0;
+
+	xassert(l);
+	xassert(f);
+	xassert(sub);
+	xassert(l->magic == LIST_MAGIC);
+	xassert(sub->magic == LIST_MAGIC);
+	xassert(l->fDel == sub->fDel);
+
+	slurm_rwlock_wrlock(&l->mutex);
+	slurm_rwlock_wrlock(&sub->mutex);
+
+	pp = &sub->head;
+	while (*pp) {
+		v = (*pp)->data;
+
+		/* Is this element already in destination list? */
+		if (!_list_find_first_locked(l, f, v)) {
+			/* Not found: Transfer the element */
+			_list_append_locked(l, v);
+			/* Destroy increases index */
+			_list_node_destroy(sub, pp);
+			n++;
+		} else
+			/* Found: Just increase index */
+			pp = &(*pp)->next;
+	}
+
+	slurm_rwlock_unlock(&sub->mutex);
+	slurm_rwlock_unlock(&l->mutex);
+
+	return n;
 }
 
 /* list_prepend()
@@ -354,9 +403,19 @@ list_prepend (List l, void *x)
 	return v;
 }
 
-static void *list_find_first_lock(List l, ListFindF f, void *key, bool write_lock)
+static void *_list_find_first_locked(List l, ListFindF f, void *key)
 {
-	ListNode p;
+	for (ListNode p = l->head; p; p = p->next) {
+		if (f(p->data, key))
+			return p->data;
+	}
+
+	return NULL;
+}
+
+static void *_list_find_first_lock(
+	List l, ListFindF f, void *key, bool write_lock)
+{
 	void *v = NULL;
 
 	xassert(l != NULL);
@@ -367,12 +426,8 @@ static void *list_find_first_lock(List l, ListFindF f, void *key, bool write_loc
 	else
 		slurm_rwlock_rdlock(&l->mutex);
 
-	for (p = l->head; p; p = p->next) {
-		if (f(p->data, key)) {
-			v = p->data;
-			break;
-		}
-	}
+	v = _list_find_first_locked(l, f, key);
+
 	slurm_rwlock_unlock(&l->mutex);
 
 	return v;
@@ -383,7 +438,7 @@ static void *list_find_first_lock(List l, ListFindF f, void *key, bool write_loc
  */
 void *list_find_first(List l, ListFindF f, void *key)
 {
-	return list_find_first_lock(l, f, key, true);
+	return _list_find_first_lock(l, f, key, true);
 }
 
 /*
@@ -392,7 +447,7 @@ void *list_find_first(List l, ListFindF f, void *key)
  */
 void *list_find_first_ro(List l, ListFindF f, void *key)
 {
-	return list_find_first_lock(l, f, key, false);
+	return _list_find_first_lock(l, f, key, false);
 }
 
 /* list_remove_first()
@@ -1001,6 +1056,15 @@ static void *_list_node_create(List l, ListNode *pp, void *x)
 
 	p = list_node_alloc();
 
+	/******/
+	//job_queue_rec_t *job_queue_rec;
+	//job_record_t *job_ptr;
+	//job_queue_rec = (job_queue_rec_t *) x;
+	//job_ptr = job_queue_rec->job_ptr;
+	//printf("job list count is %d \n, job id is %d ", l->count, job_ptr->job_id);
+
+
+	/*****/
 	p->data = x;
 	if (!(p->next = *pp))
 		l->tail = &p->next;
@@ -1016,6 +1080,24 @@ static void *_list_node_create(List l, ListNode *pp, void *x)
 		xassert((i->pos == *i->prev) ||
 		       ((*i->prev) && (i->pos == (*i->prev)->next)));
 	}
+
+	/****/
+	//List job_queue;
+        //job_queue_rec_t *job_queue_rec;
+        //job_record_t *job_ptr;
+	//job_queue = build_job_queue(true, false);
+	//sort_job_queue(job_queue);
+	//while ((job_queue_rec = (job_queue_rec_t *) list_pop(job_queue))) {
+	//	job_ptr  = job_queue_rec->job_ptr;
+	//	xfree(job_queue_rec);
+
+	//	printf("job id is %d \n", job_ptr->job_id);
+	//}
+
+
+
+
+	/*******/
 
 	return x;
 }

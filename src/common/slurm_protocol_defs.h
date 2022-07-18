@@ -142,8 +142,10 @@
 	 && (IS_NODE_ALLOCATED(_X) || IS_NODE_MIXED(_X)))
 #define IS_NODE_DRAINED(_X)		\
 	(IS_NODE_DRAIN(_X) && !IS_NODE_DRAINING(_X))
-#define IS_NODE_DYNAMIC(_X)		\
-	(_X->node_state & NODE_STATE_DYNAMIC)
+#define IS_NODE_DYNAMIC_FUTURE(_X)		\
+	(_X->node_state & NODE_STATE_DYNAMIC_FUTURE)
+#define IS_NODE_DYNAMIC_NORM(_X)		\
+	(_X->node_state & NODE_STATE_DYNAMIC_NORM)
 #define IS_NODE_COMPLETING(_X)	\
 	(_X->node_state & NODE_STATE_COMPLETING)
 #define IS_NODE_INVALID_REG(_X)	\
@@ -317,6 +319,8 @@ typedef enum {
 	REQUEST_UPDATE_FRONT_END,		/* 3011 */
 	DEFUNCT_RPC_3012,
 	DEFUNCT_RPC_3013,
+	REQUEST_DELETE_NODE,
+	REQUEST_CREATE_NODE,
 
 	REQUEST_RESOURCE_ALLOCATION = 4001,
 	RESPONSE_RESOURCE_ALLOCATION,
@@ -475,7 +479,6 @@ typedef struct forward {
 typedef struct slurm_protocol_header {
 	uint16_t version;
 	uint16_t flags;
-	uint16_t msg_index;
 	uint16_t msg_type; /* really slurm_msg_type_t but needs to be
 			      uint16_t for packing purposes. */
 	uint32_t body_length;
@@ -527,6 +530,8 @@ typedef struct slurm_msg {
 				 * slurm_msg_t_init() was not called since
 				 * auth_uid would be root.
 				 */
+	uid_t restrict_uid;
+	bool restrict_uid_set;
 	uint32_t body_offset; /* DON'T PACK: offset in buffer where body part of
 				 buffer starts. */
 	buf_t *buffer;		/* DON'T PACK! ptr to buffer that msg was
@@ -542,7 +547,11 @@ typedef struct slurm_msg {
 	void *data;
 	uint32_t data_size;
 	uint16_t flags;
-	uint16_t msg_index;
+	uint8_t hash_index;	/* DON'T PACK: zero for normal communication.
+				 * index value copied from incoming connection,
+				 * so that we'll respond with the same hash
+				 * plugin used to connect to us originally.
+				 */
 	uint16_t msg_type; /* really a slurm_msg_type_t but needs to be
 			    * this way for packing purposes.  message type */
 	uint16_t protocol_version; /* DON'T PACK!  Only used if
@@ -844,6 +853,7 @@ typedef struct launch_tasks_request_msg {
 	uint32_t  het_job_step_cnt;	/* number of steps for entire hetjob */
 	uint32_t  het_job_task_offset;	/* Hetjob task ID offset or NO_VAL */
 	char     *het_job_node_list;	/* Hetjob step node list */
+	uint32_t mpi_plugin_id;		/* numeric version of mpi_plugin */
 	uint32_t  nnodes;	/* number of nodes in this job step       */
 	uint32_t  ntasks;	/* number of tasks in this job step   */
 	uint16_t  ntasks_per_board;/* number of tasks to invoke on each board */
@@ -908,6 +918,7 @@ typedef struct launch_tasks_request_msg {
 
 	uint16_t   slurmd_debug; /* remote slurmd debug level */
 
+	uint16_t cred_version;	/* job credential protocol_version */
 	slurm_cred_t *cred;	/* job credential            */
 	dynamic_plugin_data_t *switch_job; /* switch credential for the job */
 	List options;  /* Arbitrary job options */
@@ -997,7 +1008,10 @@ typedef struct control_status_msg {
 #define SIG_NODE_FAIL	998	/* Dummy signal value to signify node failure */
 #define SIG_FAILURE	999	/* Dummy signal value to signify sys failure */
 typedef struct kill_job_msg {
+	slurm_cred_t *cred;
 	char *details;
+	uint32_t derived_ec;
+	uint32_t exit_code;
 	uint32_t het_job_id;
 	List job_gres_info;	/* Used to set Epilog environment variables */
 	uint32_t job_state;
@@ -1109,6 +1123,7 @@ typedef struct batch_job_launch_msg {
 	char **environment;	/* environment variables to set for job,
 				 *   name=value pairs, one per line */
 	dynamic_plugin_data_t *select_jobinfo;	/* opaque data type */
+	uint16_t cred_version;	/* job credential protocol_version */
 	slurm_cred_t *cred;
 	uint8_t open_mode;	/* stdout/err append or truncate */
 	uint8_t overcommit;	/* if resources being over subscribed */
@@ -1280,6 +1295,12 @@ typedef struct {
 	uint32_t gid;
 } crontab_update_request_msg_t;
 
+typedef enum {
+	DYN_NODE_NONE = 0,
+	DYN_NODE_FUTURE,
+	DYN_NODE_NORM,
+} dynamic_node_type_t;
+
 /*****************************************************************************\
  * Slurm API Message Types
 \*****************************************************************************/
@@ -1288,7 +1309,8 @@ typedef struct slurm_node_registration_status_msg {
 	uint16_t cores;
 	uint16_t cpus;
 	uint32_t cpu_load;	/* CPU load * 100 */
-	bool dynamic;		/* dynamic registration */
+	uint8_t dynamic_type;	/* dynamic registration type */
+	char *dynamic_conf;	/* dynamic configuration */
 	char *dynamic_feature;	/* dynamic registration feature */
 	uint16_t flags;	        /* Flags from the slurmd SLURMD_REG_FLAG_* */
 	uint64_t free_mem;	/* Free memory in MiB */
@@ -1299,6 +1321,7 @@ typedef struct slurm_node_registration_status_msg {
 	buf_t *gres_info;	/* generic resource info */
 	uint32_t hash_val;      /* hash value of slurm.conf and included files
 				 * existing on node */
+	char *hostname;         /* hostname of slurmd */
 	uint32_t job_count;	/* number of associate job_id's */
 	char *node_name;
 	uint16_t boards;
@@ -1404,6 +1427,9 @@ extern void slurm_msg_t_copy(slurm_msg_t *dest, slurm_msg_t *src);
 /* here to add \\ to all \" in a string this needs to be xfreed later */
 extern char *slurm_add_slash_to_quotes(char *str);
 extern List slurm_copy_char_list(List char_list);
+extern int slurm_parse_char_list(List char_list, char *names, void *args,
+				 int (*func_ptr)(List char_list, char *name,
+						void *args));
 extern int slurm_addto_char_list(List char_list, char *names);
 extern int slurm_addto_char_list_with_case(List char_list, char *names,
 					   bool lower_case_normalization);
@@ -1412,6 +1438,7 @@ extern int slurm_addto_mode_char_list(List char_list, char *names, int mode);
 extern int slurm_addto_step_list(List step_list, char *names);
 extern int slurm_char_list_copy(List dst, List src);
 extern char *slurm_char_list_to_xstr(List char_list);
+extern int slurm_find_char_exact_in_list(void *x, void *key);
 extern int slurm_find_char_in_list(void *x, void *key);
 extern int slurm_sort_char_list_asc(void *, void *);
 extern int slurm_sort_char_list_desc(void *, void *);

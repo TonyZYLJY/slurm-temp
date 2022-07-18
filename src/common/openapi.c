@@ -230,7 +230,7 @@ static const char *_get_entry_type_string(entry_type_t type)
 	}
 }
 
-static void _free_entry_list(entry_t *entry, path_t *path,
+static void _free_entry_list(entry_t *entry, int tag,
 			     entry_method_t *method)
 {
 	entry_t *itr = entry;
@@ -240,9 +240,9 @@ static void _free_entry_list(entry_t *entry, path_t *path,
 
 	while (itr->type) {
 		debug5("%s: remove path tag:%d method:%s entry:%s name:%s",
-		       __func__, (path ? path->tag : -1),
+		       __func__, tag,
 		       (method ? get_http_method_string(method->method) :
-				       "UNKNOWN"),
+				       "N/A"),
 		       itr->entry, itr->name);
 		xfree(itr->entry);
 		xfree(itr->name);
@@ -254,22 +254,22 @@ static void _free_entry_list(entry_t *entry, path_t *path,
 
 static void _list_delete_path_t(void *x)
 {
-	entry_method_t *method;
+	entry_method_t *em;
 
 	if (!x)
 		return;
 
 	path_t *path = x;
 	xassert(path->tag != -1);
-	method = path->methods;
+	em = path->methods;
 
-	while (method->method) {
+	while (em->entries) {
 		debug5("%s: remove path tag:%d method:%s", __func__, path->tag,
-		       get_http_method_string(method->method));
+		       get_http_method_string(em->method));
 
-		_free_entry_list(method->entries, path, method);
-		method->entries = NULL;
-		method++;
+		_free_entry_list(em->entries, path->tag, em);
+		em->entries = NULL;
+		em++;
 	}
 
 	xfree(path->methods);
@@ -345,6 +345,44 @@ fail:
 	xfree(entries);
 	xfree(buffer);
 	return NULL;
+}
+
+static int _print_path_tag_methods(void *x, void *arg)
+{
+	path_t *path = (path_t *) x;
+	int *tag = (int *) arg;
+	char *methods_str = NULL;
+
+	if (path->tag != *tag)
+		return 0;
+
+	for (entry_method_t *em = path->methods; em->entries; em++)
+		xstrfmtcat(methods_str, "%s%s (%d)", methods_str ? ", " : "",
+			   get_http_method_string(em->method), em->method);
+
+	if (methods_str)
+		debug4("%s:    methods: %s", __func__, methods_str);
+	else
+		debug4("%s:    no methods found in path tag %d",
+		       __func__, path->tag);
+	xfree(methods_str);
+
+	/*
+	 * We found the (unique) tag, so return -1 to exit early. The item's
+	 * index returned by list_for_each_ro() will be negative.
+	 */
+	return -1;
+}
+
+extern void print_path_tag_methods(openapi_t *oas, int tag)
+{
+	if (get_log_level() < LOG_LEVEL_DEBUG4)
+		return;
+
+	xassert(oas->magic == MAGIC_OAS);
+
+	if (list_for_each_ro(oas->paths, _print_path_tag_methods, &tag) >= 0)
+		error("%s: Tag %d not found in oas->paths", __func__, tag);
 }
 
 static bool _match_server_path(const data_t *server_path, const data_t *path,
@@ -556,10 +594,13 @@ static data_for_each_cmd_t _populate_methods(const char *key,
 	const data_t *para;
 	int count = 0;
 	entry_t *entry;
+	http_request_method_t method_type = get_http_method(key);
 
-	if ((method->method = get_http_method(key)) == HTTP_REQUEST_INVALID)
+	if (method_type == HTTP_REQUEST_INVALID)
 		/* Ignore none HTTP method dictionary keys */
 		return DATA_FOR_EACH_CONT;
+
+	method->method = method_type;
 
 	if (data_get_type(data) != DATA_TYPE_DICT)
 		fatal("%s: unexpected data type %s instead of dictionary",
@@ -571,23 +612,26 @@ static data_for_each_cmd_t _populate_methods(const char *key,
 	if (!method->entries) {
 		/* only add entries on first method parse */
 		method->entries = xcalloc((count + 1), sizeof(entry_t));
-		/* count is already bounded */
-		memcpy(method->entries, args->entries,
-		       (count * sizeof(entry_t)));
-	}
-
-	/* unlink strings from source */
-	for (entry = args->entries; entry->type; entry++) {
-		entry->entry = NULL;
-		entry->name = NULL;
+		/* Copy spec entry list into method entry list */
+		entry_t *dest = method->entries;
+		for (entry_t *src = args->entries; src->type; src++) {
+			dest->entry = xstrdup(src->entry);
+			dest->name = xstrdup(src->name);
+			dest->type = src->type;
+			dest->parameter = src->parameter;
+			dest++;
+		}
 	}
 
 	/* point to new entries clone */
 	nargs.entries = method->entries;
 
 	para = data_key_get_const(data, "parameters");
-	if (!para)
+	if (!para) {
+		/* increment to next method entry */
+		args->method++;
 		return DATA_FOR_EACH_CONT;
+	}
 	if (data_get_type(para) != DATA_TYPE_LIST)
 		return DATA_FOR_EACH_FAIL;
 	if (data_list_for_each_const(para, _populate_parameters, &nargs) < 0)
@@ -642,7 +686,7 @@ extern int register_path_tag(openapi_t *oas, const char *str_path)
 	rc = path->tag;
 
 cleanup:
-	_free_entry_list(entries, path, args.method);
+	_free_entry_list(entries, (path ? path->tag : -1), NULL);
 	entries = NULL;
 
 	return rc;
@@ -809,7 +853,6 @@ extern int find_path_tag(openapi_t *oas, const data_t *dpath, data_t *params,
 			 http_request_method_t method)
 {
 	path_t *path;
-	int tag = -1;
 	match_path_from_data_t args = {
 		.params = params,
 		.dpath = dpath,
@@ -819,10 +862,16 @@ extern int find_path_tag(openapi_t *oas, const data_t *dpath, data_t *params,
 	xassert(data_get_type(params) == DATA_TYPE_DICT);
 
 	path = list_find_first(oas->paths, _match_path_from_data, &args);
-	if (path)
-		tag = path->tag;
+	if (!path)
+		return -1;
 
-	return tag;
+	/* Make sure the path tag actually contains the method requested */
+	for (entry_method_t *em = path->methods; em->entries; em++) {
+		if (em->method == method)
+			return path->tag;
+	}
+
+	return -2;
 }
 
 static void _oas_plugrack_foreach(const char *full_type, const char *fq_path,

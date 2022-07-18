@@ -1,4 +1,4 @@
-.TH "slurmdbd.conf" "5" "Slurm Configuration File" "January 2022" "Slurm Configuration File"
+.TH "slurmdbd.conf" "5" "Slurm Configuration File" "April 2022" "Slurm Configuration File"
 
 .SH "NAME"
 slurmdbd.conf \- Slurm Database Daemon (SlurmDBD) configuration file
@@ -22,6 +22,12 @@ be read as the other user ID in response to a SIGHUP signal.
 This file should be protected from unauthorized access since it
 contains a database password.
 The overall configuration parameters available include:
+
+.TP
+\fBAllowNoDefAcct\fR
+Remove requirement for users to have a default account.  Boolean, yes to turn
+on, no (default) to enforce default accounts.
+.IP
 
 .TP
 \fBArchiveDir\fR
@@ -224,6 +230,27 @@ Disable IPv4 only operation for the slurmdbd. This should also be set in your
 Enable using IPv6 addresses for the slurmdbd. When using both IPv4 and IPv6,
 address family preferences will be based on your /etc/gai.conf file. This
 should also be set in your \fBslurm.conf\fR file.
+.IP
+
+.TP
+\fBkeepaliveinterval=#\fR
+Specifies the interval between keepalive probes on the socket communications
+between the backup and primary slurmdbd.
+The default value is 30 seconds.
+.IP
+
+.TP
+\fBkeepaliveprobes=#\fR
+Specifies the number of keepalive probes sent on the socket communications
+between the backup and primary slurmdbd.
+The default value is 3.
+.IP
+
+.TP
+\fBkeepalivetime=#\fR
+Specifies how long to wait before sending keepalive probes between the primary
+and backup slurmdbd processes.
+The default value is 30 seconds.
 .RE
 .IP
 
@@ -499,7 +526,7 @@ Return an error if a query is against too large of a time span, to prevent
 ill\-formed queries from causing performance problems within SlurmDBD.
 Default value is INFINITE which allows any queries to proceed.
 Accepted time formats are the same as the MaxTime option in slurm.conf.
-User \fBSlurmUser\fR and \fBroot\fR are exempt from this restriction.
+Operator and higher privileged users are exempt from this restriction.
 Note that queries which attempt to return over 3GB of data will still
 fail to complete with ESLURM_RESULT_TOO_LARGE.
 .IP

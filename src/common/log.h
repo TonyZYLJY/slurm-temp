@@ -76,7 +76,6 @@ typedef enum {
  * log levels, logging will occur at or below the selected level
  * QUIET disable logging completely.
  */
-// here LOG_LEVEL goes in order from 0 to 10
 typedef enum {
 	LOG_LEVEL_QUIET = 0,
 	LOG_LEVEL_FATAL,
@@ -108,7 +107,6 @@ extern char *slurm_prog_name;
 
 /* some useful initializers for log_options_t
  */
-// curly braces being used as an initializer for an array
 #define LOG_OPTS_INITIALIZER	\
 	{ LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, 1, 0 , 0}
 

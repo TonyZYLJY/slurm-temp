@@ -43,8 +43,15 @@
 
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
+
+#include "src/common/data.h"
 #include "src/common/pack.h"
+#include "src/common/slurm_protocol_api.h"
+#include "src/common/read_config.h"
+#include "src/common/run_in_daemon.h"
 #include "src/common/uid.h"
+#include "src/common/xmalloc.h"
+#include "src/common/xstring.h"
 
 #include "auth_jwt.h"
 
@@ -77,6 +84,7 @@ const char plugin_name[] = "JWT authentication plugin";
 const char plugin_type[] = "auth/jwt";
 const uint32_t plugin_id = AUTH_PLUGIN_JWT;
 const uint32_t plugin_version   = SLURM_VERSION_NUMBER;
+const bool hash_enable = false;
 
 typedef struct {
 	int index; /* MUST ALWAYS BE FIRST. DO NOT PACK. */
@@ -138,8 +146,8 @@ static data_for_each_cmd_t _build_jwks_keys(data_t *d, void *arg)
 	key = pem_from_mod_exp(n, e);
 	debug3("key for kid %s mod %s exp %s is\n%s", kid, n, e, key);
 
-	data_set_string_own(data_key_set(d, "slurm-pem"), key);
 	data_set_int(data_key_set(d, "slurm-pem-len"), strlen(key));
+	data_set_string_own(data_key_set(d, "slurm-pem"), key);
 
 	return DATA_FOR_EACH_CONT;
 }
@@ -248,7 +256,7 @@ extern int fini(void)
 	return SLURM_SUCCESS;
 }
 
-auth_token_t *auth_p_create(char *auth_info)
+auth_token_t *auth_p_create(char *auth_info, uid_t r_uid, void *data, int dlen)
 {
 	return xmalloc(sizeof(auth_token_t));
 }
@@ -508,6 +516,18 @@ char *auth_p_get_host(auth_token_t *cred)
 
 	/* No way to encode this in a useful manner */
 	return NULL;
+}
+
+extern int auth_p_get_data(auth_token_t *cred, char **data, uint32_t *len)
+{
+	if (cred == NULL) {
+		slurm_seterrno(ESLURM_AUTH_BADARG);
+		return SLURM_ERROR;
+	}
+
+	*data = NULL;
+	*len = 0;
+	return SLURM_SUCCESS;
 }
 
 int auth_p_pack(auth_token_t *cred, buf_t *buf, uint16_t protocol_version)

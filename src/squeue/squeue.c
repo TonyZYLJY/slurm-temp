@@ -71,6 +71,12 @@ static int  _print_job_steps( bool clear_old );
 int
 main (int argc, char **argv)
 {
+//	ListIterator itr;
+//	itr=list_iterator_create(job_list);
+//	while(list_next(itr)){
+//		printf("hello1 ");
+//	}
+
 	log_options_t opts = LOG_OPTS_STDERR_ONLY ;
 	int error_code = SLURM_SUCCESS;
 

@@ -198,6 +198,57 @@ main(int argc, char *argv[])
 		bit_fmt(tmpstr, sizeof(tmpstr), bs);
 		TEST(bit_unfmt(bs2, tmpstr) != -1, "bitstring");
 		TEST(bit_equal(bs, bs2), "bitstring");
+
+		bit_free(bs);
+		bit_free(bs2);
+	}
+
+	note("Testing bit_overlap");
+	{
+		bitstr_t *bs = bit_alloc(1000);
+		bitstr_t *bs2;
+
+		bit_set(bs,1);
+		bit_set(bs,3);
+		bit_set(bs,64);
+		bit_set(bs,998);
+		bit_set(bs,999);
+
+		bs2 = bit_copy(bs);
+		bit_not(bs2);
+		TEST(bit_overlap(bs, bs2) == 0, "bitstring");
+		TEST(bit_overlap_any(bs, bs2) == 0, "bitstring");
+		bit_set(bs2,3);
+		bit_set(bs2,64);
+		bit_set(bs2,999);
+		TEST(bit_overlap(bs, bs2) == 3, "bitstring");
+		TEST(bit_overlap_any(bs, bs2) == 1, "bitstring any");
+
+		bit_free(bs);
+		bit_free(bs2);
+	}
+
+	note("Testing bit_set_count_range");
+	{
+		bitstr_t *bs = bit_alloc(16);
+		bit_nset(bs,0,14);
+		TEST(bit_set_count_range(bs,0,14) == 14, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,2,14) == 12, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,2,15) == 13, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,2,16) == 13, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,0,15) == 15, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,0,16) == 15, "bit_set_count_range");
+		bit_set(bs,15);
+		TEST(bit_set_count_range(bs,0,16) == 16, "bit_set_count_range");
+		bs = bit_realloc(bs,128);
+		bit_nset(bs,0,127);
+		TEST(bit_set_count_range(bs,0,63) == 63, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,0,64) == 64, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,0,65) == 65, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,1,63) == 62, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,1,64) == 63, "bit_set_count_range");
+		TEST(bit_set_count_range(bs,1,65) == 64, "bit_set_count_range");
+		bit_free(bs);
 	}
 
 	totals();

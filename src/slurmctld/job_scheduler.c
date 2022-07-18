@@ -172,12 +172,11 @@ static double _get_system_usage(void)
 		int    i;
 		double alloc_tres = 0;
 		double tot_tres   = 0;
+		node_record_t *node_ptr;
 
 		select_g_select_nodeinfo_set_all();
 
-		for (i = 0; i < node_record_count; i++) {
-			node_record_t *node_ptr =
-				&node_record_table_ptr[i];
+		for (i = 0; (node_ptr = next_node(&i)); i++) {
 			double node_alloc_tres = 0.0;
 			double node_tot_tres   = 0.0;
 
@@ -568,6 +567,15 @@ extern List build_job_queue(bool clear_start, bool backfill)
 			job_ptr->bit_flags &= ~BACKFILL_SCHED;
 			set_job_failed_assoc_qos_ptr(job_ptr);
 			acct_policy_handle_accrue_time(job_ptr, false);
+			if ((job_ptr->state_reason != WAIT_NO_REASON) &&
+			    (job_ptr->state_reason != WAIT_PRIORITY) &&
+			    (job_ptr->state_reason != WAIT_RESOURCES) &&
+			    (job_ptr->state_reason !=
+			     job_ptr->state_reason_prev_db)) {
+				job_ptr->state_reason_prev_db =
+					job_ptr->state_reason;
+				last_job_update = now;
+			}
 		}
 
 		if (((tested_jobs % 100) == 0) &&
@@ -587,13 +595,6 @@ extern List build_job_queue(bool clear_start, bool backfill)
 		job_ptr->preempt_in_progress = false;	/* initialize */
 		if (job_ptr->array_recs)
 			job_ptr->array_recs->pend_run_tasks = 0;
-		if (job_ptr->state_reason != WAIT_NO_REASON) {
-			if ((job_ptr->state_reason != WAIT_PRIORITY) &&
-			    (job_ptr->state_reason != WAIT_RESOURCES))
-				job_ptr->state_reason_prev_db =
-					job_ptr->state_reason;
-			last_job_update = now;
-		}
 		if (job_ptr->resv_list)
 			job_ptr->resv_ptr = NULL;
 		if (!_job_runnable_test1(job_ptr, clear_start))
@@ -1019,6 +1020,7 @@ static int _schedule(bool full_queue)
 	static int sched_max_job_start = 0;
 	static int bf_min_age_reserve = 0;
 	static uint32_t bf_min_prio_reserve = 0;
+	static bool bf_licenses = false;
 	static int def_job_limit = 100;
 	static int max_jobs_per_part = 0;
 	static int defer_rpc_cnt = 0;
@@ -1084,6 +1086,10 @@ static int _schedule(bool full_queue)
 			if (min_prio > 0)
 				bf_min_prio_reserve = (uint32_t) min_prio;
 		}
+
+		bf_licenses = false;
+		if (xstrcasestr(slurm_conf.sched_params, "bf_licenses"))
+			bf_licenses = true;
 
 		if ((tmp_ptr = xstrcasestr(slurm_conf.sched_params,
 					   "build_queue_timeout="))) {
@@ -1246,10 +1252,10 @@ static int _schedule(bool full_queue)
 		sched_update = slurm_conf.last_update;
 		info("SchedulerParameters=default_queue_depth=%d,"
 		     "max_rpc_cnt=%d,max_sched_time=%d,partition_job_depth=%d,"
-		     "sched_max_job_start=%d,sched_min_interval=%d",
+		     "sched_max_job_start=%d,sched_min_interval=%d%s",
 		     def_job_limit, defer_rpc_cnt, sched_timeout,
 		     max_jobs_per_part, sched_max_job_start,
-		     sched_min_interval);
+		     sched_min_interval, (bf_licenses ? ",bf_licenses" : ""));
 	}
 
 	slurm_mutex_lock(&slurmctld_config.thread_count_lock);
@@ -1363,8 +1369,10 @@ static int _schedule(bool full_queue)
 	 * In both cases, we test each partition associated with the job.
 	 */
 	if (fifo_sched) {
+		//sort_job_queue_outer(job_list);
 		slurmctld_diag_stats.schedule_queue_len = list_count(job_list);
 		job_iterator = list_iterator_create(job_list);
+		//printf("schedule queue length is%d \n\n", slurmctld_diag_stats.schedule_queue_len);
 	} else {
 		job_queue = build_job_queue(false, false);
 		slurmctld_diag_stats.schedule_queue_len = list_count(job_queue);
@@ -1374,6 +1382,9 @@ static int _schedule(bool full_queue)
 	job_ptr = NULL;
 	wait_on_resv = false;
 	while (1) {
+		if(job_ptr){
+			//printf("job id is %d \n\n", job_ptr->job_id);
+		}
 		/* Run some final guaranteed logic after each job iteration */
 		if (job_ptr) {
 			job_resv_clear_magnetic_flag(job_ptr);
@@ -1727,6 +1738,11 @@ next_task:
 				     job_state_string(job_ptr->job_state),
 				     job_reason_string(job_ptr->state_reason),
 				     job_ptr->priority);
+			if (bf_licenses) {
+				sched_debug("%pJ is blocked on licenses. Stopping scheduling so license backfill can handle this",
+					    job_ptr);
+				break;
+			}
 			continue;
 		}
 
@@ -2002,6 +2018,24 @@ out:
 extern void sort_job_queue(List job_queue)
 {
 	list_sort(job_queue, sort_job_queue2);
+}
+
+extern void sort_job_queue_outer(List job_queue){
+	list_sort(job_queue, sort_job_scheduling_queue);
+}
+
+extern int sort_job_scheduling_queue(void *x, void *y){
+	job_queue_rec_t *job_rec1 = *(job_queue_rec_t **) x;
+	job_queue_rec_t *job_rec2 = *(job_queue_rec_t **) y;
+	job_record_t *job1=job_rec1->job_ptr, *job2=job_rec2->job_ptr;
+
+	if(job1->time_limit!=job2->time_limit){
+		//printf("time limit for job1 is %d, for job2 is%d ", job1->time_limit, job2->time_limit);
+		return job1->time_limit>job2->time_limit;
+	}
+
+	//printf("job1 id is %d, job2 is id %d ", job1->job_id, job2->job_id);	
+	return job1->job_id>job1->job_id;
 }
 
 /* Note this differs from the ListCmpF typedef since we want jobs sorted
@@ -2614,6 +2648,7 @@ extern void launch_job(job_record_t *job_ptr)
 	agent_arg_ptr->hostlist = hostlist_create(launch_job_ptr->batch_host);
 	agent_arg_ptr->msg_type = REQUEST_BATCH_JOB_LAUNCH;
 	agent_arg_ptr->msg_args = (void *) launch_msg_ptr;
+	set_agent_arg_r_uid(agent_arg_ptr, SLURM_AUTH_UID_ANY);
 
 	/* Launch the RPC via agent */
 	agent_queue_request(agent_arg_ptr);
@@ -2642,20 +2677,11 @@ extern int make_batch_job_cred(batch_job_launch_msg_t *launch_msg_ptr,
 		return SLURM_ERROR;
 	}
 
-	memset(&cred_arg, 0, sizeof(slurm_cred_arg_t));
+	setup_cred_arg(&cred_arg, job_ptr);
 
 	cred_arg.step_id.job_id = launch_msg_ptr->job_id;
 	cred_arg.step_id.step_id = SLURM_BATCH_SCRIPT;
 	cred_arg.step_id.step_het_comp = NO_VAL;
-	cred_arg.uid       = launch_msg_ptr->uid;
-	cred_arg.gid       = launch_msg_ptr->gid;
-	cred_arg.pw_name   = launch_msg_ptr->user_name;
-	cred_arg.x11       = job_ptr->details->x11;
-	cred_arg.job_constraints     = job_ptr->details->features_use;
-	cred_arg.job_hostlist        = job_resrcs_ptr->nodes;
-	cred_arg.job_core_bitmap     = job_resrcs_ptr->core_bitmap;
-	cred_arg.job_core_spec       = job_ptr->details->core_spec;
-	cred_arg.job_mem_limit       = job_ptr->details->pn_min_memory;
 	if (job_resrcs_ptr->memory_allocated) {
 		int batch_inx = job_get_node_inx(
 			job_ptr->batch_host, job_ptr->node_bitmap);
@@ -2672,8 +2698,6 @@ extern int make_batch_job_cred(batch_job_launch_msg_t *launch_msg_ptr,
 		cred_arg.job_mem_alloc_rep_count[0] = 1;
 		cred_arg.job_mem_alloc_size = 1;
 	}
-	cred_arg.job_nhosts          = job_resrcs_ptr->nhosts;
-	cred_arg.job_gres_list       = job_ptr->gres_list_alloc;
 /*	cred_arg.step_gres_list      = NULL; */
 
 	xassert(job_ptr->batch_host);
@@ -2681,14 +2705,9 @@ extern int make_batch_job_cred(batch_job_launch_msg_t *launch_msg_ptr,
 	cred_arg.step_core_bitmap    = job_resrcs_ptr->core_bitmap;
 	cred_arg.step_mem_limit      = job_ptr->details->pn_min_memory;
 
-	cred_arg.cores_per_socket    = job_resrcs_ptr->cores_per_socket;
-	cred_arg.sockets_per_node    = job_resrcs_ptr->sockets_per_node;
-	cred_arg.sock_core_rep_count = job_resrcs_ptr->sock_core_rep_count;
-
-	cred_arg.selinux_context = job_ptr->selinux_context;
-
 	launch_msg_ptr->cred = slurm_cred_create(slurmctld_config.cred_ctx,
-						 &cred_arg, protocol_version);
+						 &cred_arg, false,
+						 protocol_version);
 	xfree(cred_arg.job_mem_alloc);
 	xfree(cred_arg.job_mem_alloc_rep_count);
 
@@ -4044,8 +4063,7 @@ next_part:
 		}
 	} else {
 		/* assume all nodes available to job for testing */
-		avail_bitmap = bit_alloc(node_record_count);
-		bit_nset(avail_bitmap, 0, (node_record_count - 1));
+		avail_bitmap = node_conf_get_active_bitmap();
 	}
 
 	/* Consider only nodes in this job's partition */
@@ -4264,39 +4282,6 @@ extern bitstr_t *node_features_reboot(job_record_t *job_ptr)
 	return boot_node_bitmap;
 }
 
-/* Determine if node boot required for this job
- * IN job_ptr - pointer to job that will be initiated
- * IN node_bitmap - nodes to be allocated
- * RET - true if reboot required
- */
-extern bool node_features_reboot_test(job_record_t *job_ptr,
-				      bitstr_t *node_bitmap)
-{
-	bitstr_t *active_bitmap = NULL, *boot_node_bitmap = NULL;
-	int node_cnt;
-
-	if (job_ptr->reboot)
-		return true;
-
-	if ((node_features_g_count() == 0) ||
-	    !node_features_g_user_update(job_ptr->user_id))
-		return false;
-
-	build_active_feature_bitmap(job_ptr, node_bitmap, &active_bitmap);
-	if (active_bitmap == NULL)	/* All have desired features */
-		return false;
-
-	boot_node_bitmap = bit_copy(node_bitmap);
-	bit_and_not(boot_node_bitmap, active_bitmap);
-	node_cnt = bit_set_count(boot_node_bitmap);
-	FREE_NULL_BITMAP(active_bitmap);
-	FREE_NULL_BITMAP(boot_node_bitmap);
-
-	if (node_cnt == 0)
-		return false;
-	return true;
-}
-
 /*
  * reboot_job_nodes - Reboot the compute nodes allocated to a job.
  * Also change the modes of KNL nodes for node_features/knl_generic plugin.
@@ -4332,6 +4317,7 @@ static void _send_reboot_msg(bitstr_t *node_bitmap, char *features,
 	reboot_agent_args->msg_args = reboot_msg;
 	reboot_msg->features = xstrdup(features);
 
+	set_agent_arg_r_uid(reboot_agent_args, SLURM_AUTH_UID_ANY);
 	agent_queue_request(reboot_agent_args);
 }
 
@@ -4374,8 +4360,8 @@ static void _set_reboot_features_active(bitstr_t *node_bitmap,
 
 		if (!bit_test(node_bitmap, i))
 			continue;
-
-		node_ptr = node_record_table_ptr + i;
+		if (!(node_ptr = node_record_table_ptr[i]))
+			continue;
 		/* Point to node features, don't copy */
 		orig_features_act =
 			node_ptr->features_act ?
@@ -4446,7 +4432,8 @@ extern void reboot_job_nodes(job_record_t *job_ptr)
 	for (i = i_first; i <= i_last; i++) {
 		if (!bit_test(boot_node_bitmap, i))
 			continue;
-		node_ptr = node_record_table_ptr + i;
+		if (!(node_ptr = node_record_table_ptr[i]))
+			continue;
 		if (protocol_version > node_ptr->protocol_version)
 			protocol_version = node_ptr->protocol_version;
 
@@ -5106,49 +5093,6 @@ void cleanup_completing(job_record_t *job_ptr)
 	if (IS_JOB_COMPLETED(job_ptr))
 		fed_mgr_job_complete(job_ptr, job_ptr->exit_code,
 				     job_ptr->start_time);
-}
-
-/*
- * _waitpid_timeout()
- *
- *  Same as waitpid(2) but kill process group for pid after timeout secs.
- */
-int
-waitpid_timeout(const char *name, pid_t pid, int *pstatus, int timeout)
-{
-	int timeout_ms = 1000 * timeout; /* timeout in ms */
-	int max_delay = 1000;		 /* max delay between waitpid calls */
-	int delay = 10;			 /* initial delay */
-	int rc;
-	int options = WNOHANG;
-
-	if (timeout <= 0 || timeout == NO_VAL16)
-		options = 0;
-
-	while ((rc = waitpid (pid, pstatus, options)) <= 0) {
-		if (rc < 0) {
-			if (errno == EINTR)
-				continue;
-			error("waitpid: %m");
-			return -1;
-		}
-		else if (timeout_ms <= 0) {
-			info("%s%stimeout after %ds: killing pgid %d",
-			     name != NULL ? name : "",
-			     name != NULL ? ": " : "",
-			     timeout, pid);
-			killpg(pid, SIGKILL);
-			options = 0;
-		}
-		else {
-			(void) poll(NULL, 0, delay);
-			timeout_ms -= delay;
-			delay = MIN (timeout_ms, MIN(max_delay, delay*2));
-		}
-	}
-
-	killpg(pid, SIGKILL);  /* kill children too */
-	return pid;
 }
 
 void main_sched_init(void)

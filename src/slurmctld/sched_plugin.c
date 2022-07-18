@@ -73,28 +73,22 @@ static bool init_run = false;
  */
 extern int sched_g_init(void)
 {
-	// assign init success value
 	int retval = SLURM_SUCCESS;
-	// this is plugin type
 	char *plugin_type = "sched";
 
-   // init_run is initialized to false
-	// g_context is null, so this if statement is false
 	if ( init_run && g_context )
 		return retval;
 
 	slurm_mutex_lock( &g_context_lock );
 
-	// if not NULL, done
 	if ( g_context )
 		goto done;
-
-   // go to plugin_context_create
-	// pass in "sched", slurm_conf.schedtype
+	
+	printf("in sched_g_init, %s, %s, in line 87\n", plugin_type, slurm_conf.schedtype);
 	g_context = plugin_context_create(plugin_type,
 					  slurm_conf.schedtype,
 					  (void **) &ops, syms, sizeof(syms));
-
+	printf("still in sched_g_init \n\n");
 	if (!g_context) {
 		error("cannot create %s context for %s",
 		      plugin_type, slurm_conf.schedtype);
@@ -122,7 +116,8 @@ extern int sched_g_fini(void)
 
 	main_sched_fini();
 
-	gs_fini();
+	if (slurm_conf.preempt_mode & PREEMPT_MODE_GANG)
+		gs_fini();
 
 	return rc;
 }

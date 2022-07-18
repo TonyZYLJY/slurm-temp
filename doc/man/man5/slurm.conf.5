@@ -1,4 +1,4 @@
-.TH "slurm.conf" "5" "Slurm Configuration File" "March 2022" "Slurm Configuration File"
+.TH "slurm.conf" "5" "Slurm Configuration File" "June 2022" "Slurm Configuration File"
 
 .SH "NAME"
 slurm.conf \- Slurm configuration file
@@ -87,8 +87,7 @@ launched but then killed when the limit is reached.
 With \fIqos\fR and/or \fIwckeys\fR enforced jobs will not be scheduled unless
 a valid qos and/or workload characterization key is specified.
 
-When \fBAccountingStorageEnforce\fR is changed, a restart of the slurmctld
-daemon is required (not just a "scontrol reconfig").
+A restart of slurmctld is required for changes to this parameter to take effect.
 .IP
 
 .TP
@@ -437,6 +436,10 @@ be comma separated.
 .TP 15
 \fBdisable_token_creation\fR
 Disable "scontrol token" use by non\-SlurmUser accounts.
+.TP
+\fBmax_token_lifespan\fR=<seconds>
+Set max lifespan (in seconds) for any token generated for user accounts.
+(This limit does not apply to SlurmUser.)
 .IP
 
 .TP
@@ -651,6 +654,13 @@ Comma\-separated options identifying communication options.
 .IP
 .RS
 .TP 15
+\fBblock_null_hash\fR
+Require all Slurm authentication tokens to include a newer (20.11.9 and
+21.08.8) payload that provides an additional layer of security against
+credential replay attacks.  This option should only be enabled once all Slurm
+daemons have been upgraded to 20.11.9/21.08.8 or newer, and all jobs that were
+started before the upgrade have been completed.
+.TP
 \fBCheckGhalQuiesce\fR
 Used specifically on a Cray using an Aries Ghal interconnect.  This will check
 to see if the system is quiescing when sending a message, and if so, we wait
@@ -671,7 +681,20 @@ using both IPv4 and IPv6, address family preferences will be based on your
 .IP
 
 .TP
-\fBKeepAliveTime=#\fR
+\fBkeepaliveinterval=#\fR
+Specifies the interval between keepalive probes on the socket communications
+between srun and its slurmstepd process.
+.IP
+
+.TP
+\fBkeepaliveprobes=#\fR
+Specifies the number of keepalive probes sent on the socket communications
+between srun command and its slurmstepd process before the connection is
+considered broken.
+.IP
+
+.TP
+\fBkeepalivetime=#\fR
 Specifies how long sockets communications used between the srun command and its
 slurmstepd process are kept alive after disconnect. Longer values can be used
 to improve reliability of communications in the event of network failures.
@@ -735,7 +758,7 @@ Deprecated option, see \fBSlurmctldHost\fR.
 .TP
 \fBCoreSpecPlugin\fR
 Identifies the plugins to be used for enforcement of core specialization.
-The slurmd daemon must be restarted for a change in CoreSpecPlugin
+A restart of the slurmd daemons is required for changes to this parameter
 to take effect.
 Acceptable values at present include:
 .IP
@@ -825,8 +848,7 @@ The default is OnDemand, Performance and UserSpace.
 \fBCredType\fR
 The cryptographic signature tool to be used in the creation of
 job step credentials.
-The slurmctld daemon must be restarted for a change in \fBCredType\fR
-to take effect.
+A restart of slurmctld is required for changes to this parameter to take effect.
 The default (and recommended) value is "cred/munge".
 .IP
 
@@ -948,12 +970,15 @@ License management details
 
 .TP
 \fBNetwork\fR
-Network details
+Network details. \fBWarning\fR: activating this flag may cause logging of
+passwords, tokens or other authentication credentials.
 .IP
 
 .TP
 \fBNetworkRaw\fR
-Dump raw hex values of key Network communications. Warning: very verbose.
+Dump raw hex values of key Network communications. \fBWarning\fR: This flag
+will cause very verbose logs and may cause logging of passwords, tokens or
+other authentication credentials.
 .IP
 
 .TP
@@ -1258,8 +1283,8 @@ additional functionality.
 No generic resources are managed by default.
 Ensure this parameter is consistent across all nodes in the cluster for
 proper operation.
-The \fBslurmctld\fR and \fBslurmd\fR daemons must be restarted for changes to
-this parameter to take effect.
+A restart of slurmctld and the slurmd daemons is required for this to take
+effect.
 .IP
 
 .TP
@@ -1381,7 +1406,7 @@ The execution interval is controlled using the \fBHealthCheckInterval\fR
 parameter.
 Note that the \fBHealthCheckProgram\fR will be executed at the same time
 on all nodes to minimize its impact upon parallel programs.
-This program is will be killed if it does not terminate normally within
+This program will be killed if it does not terminate normally within
 60 seconds.
 This program will also be executed when the slurmd daemon is first started and
 before it registers with the slurmctld daemon.
@@ -1488,8 +1513,10 @@ The default value for task sampling interval
 is 30 seconds. The default value for all other intervals is 0.
 An interval of 0 disables sampling of the specified type.
 If the task sampling interval is 0, accounting
-information is collected only at job termination (reducing Slurm
-interference with the job).
+information is collected only at job termination, which reduces Slurm
+interference with the job, but also means that the statistics about a job
+don't reflect the average or maximum of several samples thoughout the life
+of the job, but just show the information collected in the single sample.
 .br
 .br
 Smaller (non\-zero) values have a greater impact upon job performance,
@@ -1635,8 +1662,7 @@ Only used for database type storage plugins, ignored otherwise.
 .TP
 \fBJobContainerType\fR
 Identifies the plugin to be used for job tracking.
-The slurmd daemon must be restarted for a change in JobContainerType
-to take effect.
+A restart of slurmctld is required for changes to this parameter to take effect.
 \fBNOTE\fR: The \fBJobContainerType\fR applies to a job allocation, while
 \fBProctrackType\fR applies to job steps.
 Acceptable values at present include:
@@ -1995,11 +2021,10 @@ messages. The default value is 10000, or \fBMaxJobCount\fR * 2 + Node Count
 
 .TP
 \fBMaxJobCount\fR
-The maximum number of jobs Slurm can have in its active database
-at one time. Set the values of \fBMaxJobCount\fR and \fBMinJobAge\fR
-to ensure the slurmctld daemon does not exhaust its memory or other
-resources. Once this limit is reached, requests to submit additional
-jobs will fail. The default value is 10000 jobs.
+The maximum number of jobs slurmctld can have in memory at one time.
+Combine with \fBMinJobAge\fR to ensure the slurmctld daemon does not exhaust
+its memory or other resources. Once this limit is reached, requests to submit
+additional jobs will fail. The default value is 10000 jobs.
 NOTE: Each task of a job array counts as one job even though they will not
 occupy separate job records until modified or initiated.
 Performance can suffer with more than a few hundred thousand jobs.
@@ -2007,8 +2032,7 @@ Setting per MaxSubmitJobs per user is generally valuable to prevent a single
 user from filling the system with jobs.
 This is accomplished using Slurm's database and configuring enforcement of
 resource limits.
-This value may not be reset via "scontrol reconfig".
-It only takes effect upon restart of the slurmctld daemon.
+A restart of slurmctld is required for changes to this parameter to take effect.
 .IP
 
 .TP
@@ -2056,6 +2080,16 @@ resources are over\-subscribed (\fBOverSubscribe=yes\fR or
 The default value is 0 (unlimited).
 Also see \fBDefMemPerNode\fR and \fBMaxMemPerCPU\fR.
 \fBMaxMemPerCPU\fR and \fBMaxMemPerNode\fR are mutually exclusive.
+.IP
+
+.TP
+\fBMaxNodeCount\fR
+Maximum count of nodes which may exist in the controller. By default MaxNodeCount
+will be set to the number of nodes found in the slurm.conf. MaxNodeCount will
+be ignored if less than the number of nodes found in the slurm.conf. Increase
+MaxNodeCount to accommodate dynamically created nodes with dynamic node
+registrations and nodes created with scontrol. The slurmctld daemon must be
+restarted for changes to this parameter to take effect.
 .IP
 
 .TP
@@ -2122,8 +2156,8 @@ necessitate higher values.
 
 .TP
 \fBMinJobAge\fR
-The minimum age of a completed job before its record is purged from
-Slurm's active database. Set the values of \fBMaxJobCount\fR and
+The minimum age of a completed job before its record is cleared from the list
+of jobs slurmctld keeps in memory. Combine with \fBMaxJobCount\fR
 to ensure the slurmctld daemon does not exhaust
 its memory or other resources. The default value is 300 seconds.
 A value of zero prevents any job record purging.
@@ -2179,6 +2213,8 @@ Identifies the places in which to look for Slurm plugins.
 This is a colon\-separated list of directories, like the PATH
 environment variable.
 The default value is the prefix given at configure time + "/lib/slurm".
+A restart of slurmctld and the slurmd daemons is required for changes to
+this parameter to take effect.
 .IP
 
 .TP
@@ -2325,7 +2361,7 @@ Identifies the plugin used for system power management.
 Currently supported plugins include:
 \fBcray_aries\fR and
 \fBnone\fR.
-Changes to this value require restarting Slurm daemons to take effect.
+A restart of slurmctld is required for changes to this parameter to take effect.
 More information about system power management is available here
 <https://slurm.schedmd.com/power_mgmt.html>.
 By default, no power plugin is loaded.
@@ -2809,6 +2845,8 @@ definitions unless they are coordinators of them.
 .TP
 \fBcloud\fR
 Powered down nodes in the cloud are visible.
+Without this flag, cloud nodes will not appear in the output of commands
+like \fBsinfo\fR unless they are powered on, even for SlurmUser and root.
 .IP
 
 .TP
@@ -2862,8 +2900,7 @@ coordinator of, but can only see themselves when listing users.
 Identifies the plugin to be used for process tracking on a job step basis.
 The slurmd daemon uses this mechanism to identify all processes
 which are children of processes it spawns for a user job step.
-The slurmd daemon must be restarted for a change in ProctrackType
-to take effect.
+A restart of slurmctld is required for changes to this parameter to take effect.
 NOTE: "proctrack/linuxproc" and "proctrack/pgid" can fail to
 identify all processes associated with a job since processes
 can become a child of the init process (when the parent process
@@ -2961,6 +2998,14 @@ for example pam_slurm_adopt may place processes launched through a direct user
 login into this container. If using pam_slurm_adopt, then ProcTrackType must be
 set to either \fBproctrack/cgroup\fR or \fBproctrack/cray_aries\fR.
 Setting the Contain implicitly sets the Alloc flag.
+.IP
+
+.TP
+\fBDeferBatch\fR
+If set, slurmctld will wait until the prolog completes on all allocated
+nodes before sending the batch job launch request. With just the Alloc flag,
+slurmctld will launch the batch step as soon as the first node in the job
+allocation completes the prolog.
 .IP
 
 .TP
@@ -3472,6 +3517,14 @@ Default: 0, Min: 0, Max: 100000.
 .IP
 
 .TP
+\fBbf_licenses\fR
+Require the backfill scheduling logic to track and plan for license
+availability. By default, any job blocked on license availability will not
+have resources reserved which can lead to job starvation.
+This option implicitly enables \fBbf_running_job_reserve\fR.
+.IP
+
+.TP
 \fBbf_max_job_array_resv=#\fR
 The maximum number of tasks from a job array for which the backfill scheduler
 will reserve resources in the future.
@@ -3807,6 +3860,10 @@ separate socket by default. Use the Ignore_NUMA option to report the correct
 socket count, but \fBnot\fR optimize resource allocations on the NUMA nodes.
 .IP
 
+\fBNOTE\fR: Since hwloc 2.0 NUMA Nodes are are not part of the main/CPU topology tree,
+because of that if Slurm is build with hwloc 2.0 or above Slurm will treat
+HWLOC_OBJ_PACKAGE as Socket, you can change this behavior using
+\fBSlurmdParameters\fR=l3cache_as_socket.
 .TP
 \fBmax_array_tasks\fR
 Specify the maximum number of tasks that can be included in a job array.
@@ -3871,8 +3928,8 @@ specified desired switch count. The default value is 300 seconds.
 If used, the backup controller will not schedule jobs when it takes over. The
 backup controller will allow jobs to be submitted, modified and cancelled but
 won't schedule new jobs. This is useful in Cray environments when the backup
-controller resides on an external Cray node.  A restart is required to alter
-this option.
+controller resides on an external Cray node.
+A restart of slurmctld is required for changes to this parameter to take effect.
 .IP
 
 .TP
@@ -4052,9 +4109,7 @@ The default value is 30 seconds.
 .TP
 \fBSchedulerType\fR
 Identifies the type of scheduler to be used.
-Note the \fBslurmctld\fR daemon must be restarted for a change in
-scheduler type to become effective (reconfiguring a running daemon has
-no effect for this parameter).
+A restart of slurmctld is required for changes to this parameter to take effect.
 The \fBscontrol\fR command can be used to manually change job priorities
 if desired.
 Acceptable values include:
@@ -4099,7 +4154,7 @@ Enable the use of scrontab to submit and manage periodic repeating jobs.
 .TP
 \fBSelectType\fR
 Identifies the type of resource selection algorithm to be used.
-Changing this value can only be done by restarting the slurmctld daemon.
+A restart of slurmctld is required for changes to this parameter to take effect.
 When changed, all job information (running and pending) will be lost,
 since the job state save format used by each plugin is different.
 The only exception to this is when changing from cons_res to cons_tres or from
@@ -4143,7 +4198,9 @@ resource allocations will favor nodes with high CPU counts as needed based upon
 the job's node and CPU specification if \fBTopologyPlugin=topology/none\fR is
 configured. Use of other topology plugins with select/linear and heterogeneous
 nodes is not recommended and may result in valid job allocation requests being
-rejected.
+rejected. The linear plugin is not designed to track generic resources on a
+node. In cases where generic resources (such as GPUs) need to be tracked,
+the cons_res or cons_tres plugins should be used instead.
 This is the default value.
 .RE
 .IP
@@ -4162,6 +4219,8 @@ By default \fBSelectType=select/cons_res\fR, \fBSelectType=select/cray_aries\fR,
 and \fBSelectType=select/cons_tres\fR, use
 \fBCR_Core_Memory\fR, which allocates Core
 to jobs with considering their memory consumption.
+
+A restart of slurmctld is required for changes to this parameter to take effect.
 
 The following options are supported for \fBSelectType=select/cray_aries\fR:
 .IP
@@ -4393,6 +4452,7 @@ where the daemon runs.
 If the first specified host fails, the daemon will execute on the second host.
 If both the first and second specified host fails, the daemon will execute on
 the third host.
+A restart of slurmctld is required for changes to this parameter to take effect.
 .IP
 
 .TP
@@ -4441,7 +4501,9 @@ When enabled the slurmd will be permitted to retrieve config files from the
 slurmctld, and on any 'scontrol reconfigure' command new configs will
 be automatically pushed out and applied to nodes that are running in this
 "configless" mode.
-NOTE: a restart of the slurmctld is required for this to take effect.
+A restart of slurmctld is required for changes to this parameter to take effect.
+NOTE: Included files with the \fBInclude\fR directive will only be pushed
+if the filename has no path separators and is located adjacent to slurm.conf.
 .IP
 
 .TP
@@ -4538,6 +4600,7 @@ build time. If none is explicitly specified, it will be set to 6817.
 \fBSlurmctldPort\fR may also be configured to support a range of port
 numbers in order to accept larger bursts of incoming messages by specifying
 two numbers separated by a dash (e.g. \fBSlurmctldPort=6817\-6818\fR).
+A restart of slurmctld is required for changes to this parameter to take effect.
 NOTE: Either \fBslurmctld\fR and \fBslurmd\fR daemons must not
 execute on the same nodes or the values of \fBSlurmctldPort\fR and
 \fBSlurmdPort\fR must be different.
@@ -4722,7 +4785,7 @@ Multiple options may be comma separated.
 \fBconfig_overrides\fR
 If set, consider the configuration of each node to be that specified in the
 slurm.conf configuration file and any node with less than the
-configured resources will \fBnot\fR be set DRAIN.
+configured resources will \fBnot\fR be set to INVAL/INVALID_REG.
 This option is generally only useful for testing purposes.
 Equivalent to the now deprecated FastSchedule=2 option.
 .IP
@@ -4732,6 +4795,15 @@ Equivalent to the now deprecated FastSchedule=2 option.
 Use the hwloc l3cache as the socket count. Can be useful on certain processors
 where the socket level is too coarse, and the l3cache may provide better
 task distribution. (E.g., along CCX boundaries instead of socket boundaries.)
+Mutually exclusive with numa_node_as_socket.
+Requires hwloc v2.
+.TP
+\fBnuma_node_as_socket\fR
+Use the hwloc NUMA Node to determine main hierarchy object to be used as socket.
+If the option is set Slurm will check the parent object of NUMA Noda and use it
+as socket. This option may be usefull for architectures likes AMD Epyc, where
+number of nodes per socket may be configured.
+Mutually exclusive with l3cache_as_socket.
 Requires hwloc v2.
 .IP
 
@@ -4757,6 +4829,7 @@ The default value is "/var/run/slurmd.pid".
 The port number that the Slurm compute node daemon, \fBslurmd\fR, listens
 to for work. The default value is SLURMD_PORT as established at system
 build time. If none is explicitly specified, its value will be 6818.
+A restart of slurmctld is required for changes to this parameter to take effect.
 NOTE: Either slurmctld and slurmd daemons must not execute
 on the same nodes or the values of \fBSlurmctldPort\fR and \fBSlurmdPort\fR
 must be different.
@@ -4968,6 +5041,7 @@ readable and writable by both systems.
 Since all running and pending job information is stored here, the use of
 a reliable file system (e.g. RAID) is recommended.
 The default value is "/var/spool".
+A restart of slurmctld is required for changes to this parameter to take effect.
 If any slurm daemons terminate abnormally, their core files will also be written
 into this directory.
 .IP
@@ -5042,6 +5116,96 @@ The default value is 30 seconds.
 .TP
 \fBSwitchParameters\fR
 Optional parameters for the switch plugin.
+
+On HPE Slingshot systems configured with SwitchType=switch/hpe_slingshot,
+the following parameters are supported
+(separate multiple parameters with a comma):
+.IP
+
+.RS
+.TP
+\fBvnis\fR=<\fImin\fR>-<\fImax\fR>
+Range of VNIs to allocate for jobs and applications.
+This parameter is required.
+.IP
+
+.TP
+\fBtcs\fR=<\fIclass1\fR>[:<\fIclass2\fR>]...
+Set of traffic classes to configure for applications.
+Supported traffic classes are DEDICATED_ACCESS, LOW_LATENCY, BULK_DATA, and
+BEST_EFFORT.
+.IP
+
+.TP
+\fBsingle_node_vni\fR
+Allocate a VNI for single node job steps.
+.IP
+
+.TP
+\fBjob_vni\fR
+Allocate an additional VNI for jobs, shared among all job steps.
+.IP
+
+.TP
+\fBdef_<rsrc>\fR=<\fIval\fR>
+Per-CPU reserved allocation for this resource.
+.IP
+
+.TP
+\fBres_<rsrc>\fR=<\fIval\fR>
+Per-node reserved allocation for this resource.
+If set, overrides the per-CPU allocation.
+.IP
+
+.TP
+\fBmax_<rsrc>\fR=<\fIval\fR>
+Maximum per-node application for this resource.
+.IP
+.RE
+
+The resources that may be configured are:
+.IP
+
+.RS
+.TP
+\fBtxqs\fR
+Transmit command queues. The default is 3 per-CPU, maximum 1024 per-node.
+.IP
+
+.TP
+\fBtgqs\fR
+Target command queues. The default is 2 per-CPU, maximum 512 per-node.
+.IP
+
+.TP
+\fBeqs\fR
+Event queues. The default is 8 per-CPU, maximum 2048 per-node.
+.IP
+
+.TP
+\fBcts\fR
+Counters. The default is 2 per-CPU, maximum 2048 per-node.
+.IP
+
+.TP
+\fBtles\fR
+Trigger list entries. The default is 1 per-CPU, maximum 2048 per-node.
+.IP
+
+.TP
+\fBptes\fR
+Portable table entries. The default is 8 per-CPU, maximum 2048 per-node.
+.IP
+
+.TP
+\fBles\fR
+List entries. The default is 134 per-CPU, maximum 65535 per-node.
+.IP
+
+.TP
+\fBacs\fR
+Addressing contexts. The default is 4 per-CPU, maximum 1024 per-node.
+.RE
 .IP
 
 .TP
@@ -5050,8 +5214,9 @@ Identifies the type of switch or interconnect used for application
 communications.
 Acceptable values include
 "switch/cray_aries" for Cray systems,
+"switch/hpe_slingshot" for HPE Slingshot systems and
 "switch/none" for switches not requiring special processing for job launch
-or termination (Ethernet, and InfiniBand) and
+or termination (Ethernet, and InfiniBand).
 The default value is "switch/none".
 All Slurm daemons, commands and running jobs must be restarted for a
 change in \fBSwitchType\fR to take effect.
@@ -5061,7 +5226,7 @@ value of \fBSwitchType\fR, records of all jobs in any state may be lost.
 
 .TP
 \fBTaskEpilog\fR
-Fully qualified pathname of a program to be execute as the slurm job's
+Fully qualified pathname of a program to be executed as the slurm job's
 owner after termination of each task.
 See \fBTaskProlog\fR for execution order details.
 .IP
@@ -5169,7 +5334,7 @@ Set to Threads, Cores or Sockets (E.g. TaskPluginParam=autobind=threads).
 
 .TP
 \fBTaskProlog\fR
-Fully qualified pathname of a program to be execute as the slurm job's
+Fully qualified pathname of a program to be executed as the slurm job's
 owner prior to initiation of each task.
 Besides the normal environment variables, this has SLURM_TASK_PID
 available to identify the process ID of the task being started.
@@ -5517,6 +5682,8 @@ nodes will be considered consecutive in the order defined.
 For example, if the configuration for "NodeName=charlie" immediately
 follows the configuration for "NodeName=baker" they will be
 considered adjacent in the computer.
+\fBNOTE\fR: If the \fBNodeName\fR is "ALL" the process parsing the configuration
+will exit immediately as it is an internally reserved word.
 .IP
 
 .TP
@@ -5576,9 +5743,9 @@ The default value is 1.
 Number of cores reserved for system use.
 These cores will not be available for allocation to user jobs.
 Depending upon the \fBTaskPluginParam\fR option of \fBSlurmdOffSpec\fR,
-Slurm daemons (i.e. slurmd and slurmstepd) may either be confined to these
+the Slurm daemon slurmd may either be confined to these
 resources (the default) or prevented from using these resources.
-Isolation of the Slurm daemons from user jobs may improve application performance.
+Isolation of slurmd from user jobs may improve application performance.
 If this option and \fBCpuSpecList\fR are both designated for a
 node, an error is generated.  For information on the algorithm used by Slurm
 to select the cores refer to the core specialization documentation
@@ -5620,13 +5787,14 @@ A comma\-delimited list of Slurm abstract CPU IDs reserved for system use.
 The list will be expanded to include all other CPUs, if any, on the same cores.
 These cores will not be available for allocation to user jobs.
 Depending upon the \fBTaskPluginParam\fR option of \fBSlurmdOffSpec\fR,
-Slurm daemons (i.e. slurmd and slurmstepd) may either be confined to these
+the Slurm daemon slurmd may either be confined to these
 resources (the default) or prevented from using these resources.
-Isolation of the Slurm daemons from user jobs may improve application performance.
+Isolation of slurmd from user jobs may improve application performance.
 If this option and \fBCoreSpecCount\fR are both designated for a node,
 an error is generated.
 This option has no effect unless cgroup job confinement is also configured
-(\fBTaskPlugin=task/cgroup\fR with \fBConstrainCores=yes\fR in cgroup.conf).
+(i.e. the \fItask/cgroup\fR \fBTaskPlugin\fR is enabled and
+\fBConstrainCores=yes\fR is set in cgroup.conf).
 .IP
 
 .TP
@@ -5659,6 +5827,9 @@ The optional no_consume field allows you to specify that a
 generic resource does not have a finite number of that resource that gets
 consumed as it is requested. The no_consume field is a GRES specific setting
 and applies to the GRES, regardless of the type specified.
+It should not be used with GRES that has a dedicated plugin, if you're looking
+for a way to overcommit GPUs to multiple processes at the time you may be
+interested in using "shard" GRES instead.
 The final field must specify a generic resources count.
 A suffix of "K", "M", "G", "T" or "P" may be used to multiply the number by
 1024, 1048576, 1073741824, etc. respectively.
@@ -5673,11 +5844,11 @@ Also see \fBFeatures\fR for Boolean flags to filter nodes using job constraints.
 Amount of memory, in megabytes, reserved for system use and not available
 for user allocations.
 If the task/cgroup plugin is configured and that plugin constrains memory
-allocations (i.e. \fBTaskPlugin=task/cgroup\fR in slurm.conf, plus
-\fBConstrainRAMSpace=yes\fR in cgroup.conf), then Slurm compute node daemons
-(slurmd plus slurmstepd) will be allocated the specified memory limit. Note that
-having the Memory set in \fBSelectTypeParameters\fR as any of the options that
-has it as a consumable resource is needed for this option to work.
+allocations (i.e. the \fItask/cgroup\fR \fBTaskPlugin\fR is enabled and
+\fBConstrainRAMSpace=yes\fR is set in cgroup.conf), then Slurm compute node
+daemons (slurmd plus slurmstepd) will be allocated the specified memory limit.
+Note that having the Memory set in \fBSelectTypeParameters\fR as any of the
+options that has it as a consumable resource is needed for this option to work.
 The daemons will not be killed if they exhaust the memory allocation
 (ie. the Out\-Of\-Memory Killer is disabled for the daemon's memory cgroup).
 If the task/cgroup plugin is not configured, the specified memory will only be
@@ -5856,28 +6027,6 @@ most of this space.
 The Prolog and/or Epilog programs (specified in the configuration file)
 might be used to ensure the file system is kept clean.
 The default value is 0.
-.IP
-
-.TP
-\fBTRESWeights\fR
-TRESWeights are used to calculate a value that represents how
-busy a node is. Currently only used in federation configurations. TRESWeights
-are different from TRESBillingWeights \-\- which is used for fairshare
-calculations.
-
-TRES weights are specified as a comma\-separated list of
-\fI<TRES Type>\fR=\fI<TRES Weight>\fR pairs.
-.IP
-.nf
-e.g.
-NodeName=node1 ... TRESWeights="CPU=1.0,Mem=0.25G,GRES/gpu=2.0"
-.fi
-
-By default the weighted TRES value is calculated as the sum of all node TRES
-types multiplied by their corresponding TRES weight.
-
-If PriorityFlags=MAX_TRES is configured, the weighted TRES value is calculated
-as the MAX of individual node TRES' (e.g. cpus, mem, gres).
 .IP
 
 .TP
@@ -6302,7 +6451,7 @@ serial jobs as idle resources will tend to be highly fragmented, resulting
 in parallel jobs being distributed across many nodes.
 Note that node \fBWeight\fR takes precedence over how many idle resources are
 on each node.
-Also see the \fBSelectParameters\fR configuration parameter \fBCR_LLN\fR to
+Also see the \fBSelectTypeParameters\fR configuration parameter \fBCR_LLN\fR to
 use the least loaded nodes in every partition.
 .IP
 
@@ -6722,9 +6871,6 @@ See also the "Alternate" partition specification.
 \fBSuspendTime\fR
 Nodes which remain idle or down for this number of seconds will be placed into
 power save mode by \fBSuspendProgram\fR.
-For efficient system utilization, it is recommended that the value of
-\fBSuspendTime\fR be at least as large as the sum of \fBSuspendTimeout\fR
-plus \fBResumeTimeout\fR.
 For nodes that are in multiple partitions with this option set,
 the highest time will take effect. If not set on any partition, the node will
 use the \fBSuspendTime\fR value set for the entire cluster.

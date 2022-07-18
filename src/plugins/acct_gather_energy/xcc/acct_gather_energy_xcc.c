@@ -49,6 +49,7 @@
 #include "src/common/slurm_acct_gather_energy.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/fd.h"
+#include "src/common/xstring.h"
 
 #include "src/slurmd/common/proctrack.h"
 
@@ -835,7 +836,8 @@ static int _get_joules_task(uint16_t delta)
 	 * 'delta' parameter means "use cache" if data is newer than delta
 	 * seconds ago, otherwise just inquiry ipmi again.
 	 */
-	if (slurm_get_node_energy(NULL, context_id, delta, &sensor_cnt, &new)) {
+	if (slurm_get_node_energy(conf->node_name, context_id, delta,
+				  &sensor_cnt, &new)) {
 		error("%s: can't get info from slurmd", __func__);
 		return SLURM_ERROR;
 	}

@@ -50,6 +50,7 @@
 
 #include "slurm/slurm.h"
 #include "slurm/slurm_errno.h"
+#include "slurm/slurmdb.h"
 
 #include "src/common/list.h"
 #include "src/common/macros.h"
@@ -65,9 +66,12 @@
 #include "src/slurmctld/reservation.h"
 #include "src/slurmctld/slurmctld.h"
 #include "src/plugins/sched/builtin/builtin.h"
+#include "src/slurmctld/job_scheduler.h"
+#include "src/slurmctld/node_scheduler.h"
+#include "src/slurmctld/srun_comm.h"
 
 #ifndef BACKFILL_INTERVAL
-#  define BACKFILL_INTERVAL	30
+#  define BACKFILL_INTERVAL	2
 #endif
 
 /*********************** local variables *********************/
@@ -135,6 +139,19 @@ static void _load_config(void)
 	}
 }
 
+static void display_list(){
+	List job_queue;
+	job_record_t *job_ptr;
+	job_queue_rec_t *job_queue_rec;
+	job_queue=build_job_queue(true, false);
+	
+	while((job_queue_rec = (job_queue_rec_t *) list_pop(job_queue))){
+		job_ptr=job_queue_rec->job_ptr;
+		printf("job id is %d, expected job started time %s \n", job_ptr->job_id, ctime(&job_ptr->start_time));
+	}
+	FREE_NULL_LIST(job_queue);	
+}
+
 static void _compute_start_times(void)
 {
 	int j, rc = SLURM_SUCCESS, job_cnt = 0;
@@ -152,7 +169,8 @@ static void _compute_start_times(void)
 	last_job_alloc = now - 1;
 	alloc_bitmap = bit_alloc(node_record_count);
 	job_queue = build_job_queue(true, false);
-	sort_job_queue(job_queue);
+	//sort_job_queue(job_queue);
+	sort_job_queue_outer(job_queue);
 	while ((job_queue_rec = (job_queue_rec_t *) list_pop(job_queue))) {
 		job_ptr  = job_queue_rec->job_ptr;
 		part_ptr = job_queue_rec->part_ptr;
@@ -165,7 +183,6 @@ static void _compute_start_times(void)
 			       max_sched_job_cnt);
 			break;
 		}
-
 		/* Determine minimum and maximum node counts */
 		/* On BlueGene systems don't adjust the min/max node limits
 		   here.  We are working on midplane values. */
@@ -203,9 +220,11 @@ static void _compute_start_times(void)
 				       SELECT_MODE_WILL_RUN,
 				       NULL, NULL,
 				       exc_core_bitmap);
+		// following code is testing
+		rc = select_nodes(job_ptr, false, NULL, NULL, false, SLURMDB_JOB_FLAG_NOTSET);
 		if (rc == SLURM_SUCCESS) {
-			last_job_update = now;
-			if (job_ptr->time_limit == INFINITE)
+			last_job_update = time(NULL);
+			/*if (job_ptr->time_limit == INFINITE)
 				time_limit = 365 * 24 * 60 * 60;
 			else if (job_ptr->time_limit != NO_VAL)
 				time_limit = job_ptr->time_limit * 60;
@@ -220,6 +239,12 @@ static void _compute_start_times(void)
 			}
 			bit_or(alloc_bitmap, avail_bitmap);
 			last_job_alloc = job_ptr->start_time + time_limit;
+			*/
+			if(job_ptr->batch_flag==0){
+				srun_allocate(job_ptr);
+			}else if(!IS_JOB_CONFIGURING(job_ptr)){
+				launch_job(job_ptr);
+			}
 		}
 		FREE_NULL_BITMAP(avail_bitmap);
 		FREE_NULL_BITMAP(exc_core_bitmap);
@@ -229,6 +254,7 @@ static void _compute_start_times(void)
 			       max_sched_job_cnt);
 			break;
 		}
+		printf("job id is: %d, start time is %s, time limit is %d  \n\n", job_ptr->job_id, ctime(&job_ptr->start_time), job_ptr->time_limit);
 	}
 	FREE_NULL_LIST(job_queue);
 	FREE_NULL_BITMAP(alloc_bitmap);
@@ -243,6 +269,7 @@ extern void builtin_reconfig(void)
 /* builtin_agent - detached thread periodically when pending jobs can start */
 extern void *builtin_agent(void *args)
 {
+	//printf("in builtin sched \n");
 	time_t now;
 	double wait_time;
 	static time_t last_sched_time = 0;
@@ -266,6 +293,8 @@ extern void *builtin_agent(void *args)
 			continue;
 
 		lock_slurmctld(all_locks);
+		printf("in built in agent\n\n");
+		//display_list();
 		_compute_start_times();
 		last_sched_time = time(NULL);
 		(void) bb_g_job_try_stage_in();

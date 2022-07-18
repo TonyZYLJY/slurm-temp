@@ -191,7 +191,6 @@
 #define gres_get_value_by_type	slurm_gres_get_value_by_type
 #define gres_get_job_info	slurm_gres_get_job_info
 #define gres_get_step_info	slurm_gres_get_step_info
-#define gres_device_major	slurm_gres_device_major
 #define gres_sock_delete	slurm_gres_sock_delete
 #define gres_job_list_delete	slurm_gres_job_list_delete
 #define destroy_gres_device	slurm_destroy_gres_device
@@ -207,6 +206,7 @@
 #define	list_append_list	slurm_list_append_list
 #define	list_transfer		slurm_list_transfer
 #define	list_transfer_max	slurm_list_transfer_max
+#define	list_transfer_unique	slurm_list_transfer_unique
 #define	list_prepend		slurm_list_prepend
 #define	list_find_first		slurm_list_find_first
 #define	list_find_first_ro	slurm_list_find_first_ro
@@ -379,6 +379,7 @@
 
 /* xstring.[ch] functions */
 #define	_xstrcat		slurm_xstrcat
+#define	_xstrcatat		slurm_xstrcatat
 #define	_xstrncat		slurm_xstrncat
 #define	_xstrcatchar		slurm_xstrcatchar
 #define	_xstrftimecat		slurm_xstrftimecat
@@ -521,12 +522,14 @@
 #define xfree_struct_passwd		slurm_xfree_struct_passwd
 #define stepd_getgr			slurm_stepd_getgr
 #define xfree_struct_group_array	slurm_xfree_struct_group_array
+#define stepd_gethostbyname		slurm_stepd_gethostbyname
+#define xfree_struct_hostent		slurm_xfree_struct_hostent
 #define stepd_get_namespace_fd		slurm_stepd_get_namespace_fd
 
 /* cgroup.[ch] functions */
 #define cgroup_conf_init		slurm_cgroup_conf_init
 #define cgroup_conf_destroy		slurm_cgroup_conf_destroy
-
+#define autodetect_cgroup_version       slurm_autodetect_cgroup_version
 #endif /* USE_ALIAS */
 
 /* Include the function definitions after redefining their names. */

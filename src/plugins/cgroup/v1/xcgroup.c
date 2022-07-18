@@ -227,40 +227,6 @@ extern int xcgroup_ns_find_by_pid(xcgroup_ns_t *cgns, xcgroup_t *cg, pid_t pid)
 	return fstatus;
 }
 
-extern int xcgroup_lock(xcgroup_t *cg)
-{
-	int fstatus = SLURM_ERROR;
-
-	if (cg->path == NULL)
-		return fstatus;
-
-	if ((cg->fd = open(cg->path, O_RDONLY)) < 0) {
-		error("error from open of cgroup '%s' : %m", cg->path);
-		return fstatus;
-	}
-
-	if (flock(cg->fd,  LOCK_EX) < 0) {
-		error("error locking cgroup '%s' : %m", cg->path);
-		close(cg->fd);
-	} else
-		fstatus = SLURM_SUCCESS;
-
-	return fstatus;
-}
-
-extern int xcgroup_unlock(xcgroup_t *cg)
-{
-	int fstatus = SLURM_ERROR;
-
-	if (flock(cg->fd,  LOCK_UN) < 0) {
-		error("error unlocking cgroup '%s' : %m", cg->path);
-	} else
-		fstatus = SLURM_SUCCESS;
-
-	close(cg->fd);
-	return fstatus;
-}
-
 extern int xcgroup_load(xcgroup_ns_t *cgns, xcgroup_t *cg, char *uri)
 {
 	int fstatus = SLURM_ERROR;
@@ -454,15 +420,17 @@ extern int xcgroup_create_slurm_cg(xcgroup_ns_t *ns, xcgroup_t *slurm_cg)
 	int rc = SLURM_SUCCESS;
 	char *pre;
 
-	pre = xstrdup(slurm_cgroup_conf.cgroup_prepend);
-
 #ifdef MULTIPLE_SLURMD
 	if (conf->node_name) {
-		xstrsubstitute(pre, "%n", conf->node_name);
+		pre = slurm_conf_expand_slurmd_path(
+			slurm_cgroup_conf.cgroup_prepend,
+			conf->node_name,
+			conf->hostname);
 	} else {
-		xfree(pre);
 		pre = xstrdup("/slurm");
 	}
+#else
+	pre = xstrdup(slurm_cgroup_conf.cgroup_prepend);
 #endif
 
 	/* create slurm cgroup in the ns (it could already exist) */

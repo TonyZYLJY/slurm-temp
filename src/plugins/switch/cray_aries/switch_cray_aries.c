@@ -56,8 +56,9 @@
 #include "switch_cray_aries.h"
 #include "slurm/slurm.h"
 #include "slurm/slurm_errno.h"
-#include "src/common/pack.h"
 #include "src/common/gres.h"
+#include "src/common/pack.h"
+#include "src/common/xstring.h"
 
 #ifdef HAVE_NATIVE_CRAY
 #include <job.h> /* Cray's job module component */
@@ -967,4 +968,9 @@ extern int switch_p_job_step_post_resume(stepd_step_rec_t *job)
 		INFO_LINE("call took: %s", TIME_STR);
 #endif
 	return SLURM_SUCCESS;
+}
+
+extern void switch_p_job_complete(uint32_t job_id)
+{
+	return;
 }

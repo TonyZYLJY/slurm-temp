@@ -1005,8 +1005,72 @@
               "bf_active": {
                 "type": "boolean",
                 "description": "Backfill Schedule currently active"
+              },
+              "rpcs_by_message_type": {
+                "type": "array",
+                "description": "Remote Procedure Call statistics by message type",
+                "items": {
+                  "$ref": "#/components/schemas/v0.0.38_diag_rpcm"
+                }
+              },
+              "rpcs_by_user": {
+                "type": "array",
+                "description": "Remote Procedure Call statistics by user",
+                "items": {
+                  "$ref": "#/components/schemas/v0.0.38_diag_rpcu"
+                }
               }
             }
+          }
+        }
+      },
+      "v0.0.38_diag_rpcm": {
+        "type": "object",
+        "properties": {
+          "message_type": {
+            "type": "string",
+            "description": "message type"
+          },
+          "type_id": {
+            "type": "integer",
+            "description": "message type id"
+          },
+          "count": {
+            "type": "integer",
+            "description": "rpc count"
+          },
+          "average_time": {
+            "type": "integer",
+            "description": "average time"
+          },
+          "total_time": {
+            "type": "integer",
+            "description": "total time"
+          }
+        }
+      },
+      "v0.0.38_diag_rpcu": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "user"
+          },
+          "user_id": {
+            "type": "integer",
+            "description": "user id"
+          },
+          "count": {
+            "type": "integer",
+            "description": "rpc count"
+          },
+          "average_time": {
+            "type": "integer",
+            "description": "average time"
+          },
+          "total_time": {
+            "type": "integer",
+            "description": "total time"
           }
         }
       },
@@ -1558,6 +1622,10 @@
             "type": "string",
             "description": "arbitrary comment"
           },
+          "container": {
+            "type": "string",
+            "description": "absolute path to OCI container bundle"
+          },
           "contiguous": {
             "type": "boolean",
             "description": "job requires contiguous nodes"
@@ -1951,7 +2019,11 @@
             "description": "number of assigned job hosts"
           },
           "allocated_nodes": {
-            "$ref": "#/components/schemas/v0.0.38_node_allocation"
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/v0.0.38_node_allocation"
+            },
+            "description": "array of allocated nodes"
           }
         }
       },
@@ -1964,15 +2036,21 @@
           },
           "cpus": {
             "type": "integer",
-            "description": "amount of assigned job CPUs"
+            "description": "number of assigned job CPUs"
           },
           "sockets": {
             "type": "object",
-            "description": "assignment status of each socket by socket id"
+            "description": "assignment status of each socket by numeric socket id",
+            "properties": {
+              "cores": {
+                "type": "object",
+                "description": "assignment status of each core by core id in each socket"
+              }
+            }
           },
-          "cores": {
-            "type": "object",
-            "description": "assignment status of each core by core id"
+          "nodename": {
+            "type": "string",
+            "description": "node name"
           }
         }
       },
@@ -1986,7 +2064,7 @@
             "type": "string",
             "description": "Charge resources used by this job to specified account."
           },
-          "account_gather_freqency": {
+          "account_gather_frequency": {
             "type": "string",
             "description": "Define the job accounting and profiling sampling intervals."
           },
@@ -2014,7 +2092,7 @@
             "type": "string",
             "description": "Burst buffer specification."
           },
-          "cluster_constraints": {
+          "cluster_constraint": {
             "type": "string",
             "description": "Specifies features that a federated cluster must have to have a sibling job submitted to it."
           },
@@ -2025,6 +2103,10 @@
           "constraints": {
             "type": "string",
             "description": "node features required by job."
+          },
+          "container": {
+            "type": "string",
+            "description": "absolute path to OCI container bundle"
           },
           "core_specification": {
             "type": "integer",

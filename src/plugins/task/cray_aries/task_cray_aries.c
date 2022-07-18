@@ -57,6 +57,9 @@
 
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
+
+#include "src/common/timers.h"
+#include "src/common/xstring.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
 #ifdef HAVE_NATIVE_CRAY
@@ -500,7 +503,7 @@ extern int task_p_post_step (stepd_step_rec_t *job)
 	if (job->step_id.step_id == SLURM_BATCH_SCRIPT) {
 		// Batch Job Step
 		rc = snprintf(path, sizeof(path),
-			      "/dev/cpuset/slurm/uid_%d/job_%"
+			      "/dev/cpuset/slurm/uid_%u/job_%"
 			      PRIu32 "/step_batch", job->uid, jobid);
 		if (rc < 0) {
 			CRAY_ERR("snprintf failed. Return code: %d", rc);
@@ -509,7 +512,7 @@ extern int task_p_post_step (stepd_step_rec_t *job)
 	} else if (job->step_id.step_id == SLURM_EXTERN_CONT) {
 		// Container for PAM to use for externally launched processes
 		rc = snprintf(path, sizeof(path),
-			      "/dev/cpuset/slurm/uid_%d/job_%"
+			      "/dev/cpuset/slurm/uid_%u/job_%"
 			      PRIu32 "/step_extern", job->uid, jobid);
 		if (rc < 0) {
 			CRAY_ERR("snprintf failed. Return code: %d", rc);
@@ -522,7 +525,7 @@ extern int task_p_post_step (stepd_step_rec_t *job)
 		_step_epilogue();
 
 		rc = snprintf(path, sizeof(path),
-			      "/dev/cpuset/slurm/uid_%d/job_%"
+			      "/dev/cpuset/slurm/uid_%u/job_%"
 			      PRIu32 "/step_%" PRIu32,
 			      job->uid, jobid, job->step_id.step_id);
 		if (rc < 0) {

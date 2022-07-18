@@ -743,6 +743,14 @@ static void _set_options(const int argc, char **argv)
 	xfree(opt_string);
 }
 
+static void _mpi_print_list(void)
+{
+	plugrack_t *mpi_rack = plugrack_create("mpi");
+	plugrack_read_dir(mpi_rack, slurm_conf.plugindir);
+	plugrack_print_mpi_plugins(mpi_rack);
+	plugrack_destroy(mpi_rack);
+}
+
 /*
  * _opt_args() : set options via commandline args and popt
  */
@@ -751,6 +759,11 @@ static void _opt_args(int argc, char **argv, int het_job_offset)
 	int i, command_pos = 0, command_args = 0;
 	char **rest = NULL;
 	char *fullpath;
+
+	static char *prev_mpi = NULL;
+	static int het_comp_number = -1;
+
+	het_comp_number++;
 
 	sropt.het_grp_bits = bit_alloc(MAX_HET_JOB_COMPONENTS);
 	bit_set(sropt.het_grp_bits, het_job_offset);
@@ -780,8 +793,16 @@ static void _opt_args(int argc, char **argv, int het_job_offset)
 
 	command_args = sropt.argc;
 
-	if (!xstrcmp(sropt.mpi_type, "list"))
-		(void) mpi_g_client_init(sropt.mpi_type);
+	if (!prev_mpi && het_comp_number &&
+	    xstrcmp(sropt.mpi_type, slurm_conf.mpi_default)) {
+		error("--mpi is only supported in the first heterogeneous component");
+		exit(error_exit);
+	}
+	prev_mpi = sropt.mpi_type;
+	if (!xstrcmp(sropt.mpi_type, "list")) {
+		_mpi_print_list();
+		exit(0);
+	}
 	if (!rest && !sropt.test_only)
 		fatal("No command given to execute.");
 
@@ -963,6 +984,14 @@ static bool _opt_verify(void)
 			opt.ntasks_set = false;
 		if (slurm_option_set_by_env(&opt, 'N'))
 			opt.nodes_set = false;
+	}
+
+	/* slurm_verify_cpu_bind has to be called before validate_hint_option */
+	if (opt.srun_opt->cpu_bind) {
+		if (slurm_verify_cpu_bind(opt.srun_opt->cpu_bind,
+					  &opt.srun_opt->cpu_bind,
+					  &opt.srun_opt->cpu_bind_type))
+			verified = false;
 	}
 
 	if (opt.hint &&
@@ -1277,8 +1306,9 @@ static bool _opt_verify(void)
 
 	if (!sropt.mpi_type)
 		sropt.mpi_type = xstrdup(slurm_conf.mpi_default);
-	if (mpi_g_client_init(sropt.mpi_type) == SLURM_ERROR) {
-		error("invalid MPI type '%s', --mpi=list for acceptable types",
+
+	if (!mpi_g_client_init(&sropt.mpi_type)) {
+		error("Invalid MPI type '%s', --mpi=list for acceptable types",
 		      sropt.mpi_type);
 		exit(error_exit);
 	}

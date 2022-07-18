@@ -1,4 +1,4 @@
-.TH scontrol "1" "Slurm Commands" "February 2022" "Slurm Commands"
+.TH scontrol "1" "Slurm Commands" "May 2022" "Slurm Commands"
 
 .SH "NAME"
 scontrol \- view or modify Slurm configuration and state.
@@ -127,9 +127,8 @@ The cluster to issue commands to. Only one cluster name may be specified.
 
 .TP
 \fBcreate\fR <\fISPECIFICATION\fR>
-Create a new partition or reservation.  See the full list of parameters
-below.  Include the tag "res" to create a reservation without specifying
-a reservation name.
+Create a new node, partition, or reservation.  See the full list of parameters
+below.
 .IP
 
 .TP
@@ -141,10 +140,11 @@ COMPLETING or DOWN state.
 .TP
 \fBdelete\fR <\fISPECIFICATION\fR>
 Delete the entry with the specified \fISPECIFICATION\fP.
-The two \fISPECIFICATION\fP choices are \fIPartitionName=<name>\fP and
-\fIReservation=<name>\fP. Reservations and partitions should have
-no associated jobs at the time of their deletion (modify the jobs first).
-If the specified partition is in use, the request is denied.
+The three \fISPECIFICATION\fP choices are \fINodeName=<nodelist>\fP,
+\fIPartitionName=<name>\fP and \fIReservation=<name>\fP. Nodes can't be deleted
+if they are in a reservation or have jobs on running. Reservations and
+partitions should have no associated jobs at the time of their deletion (modify
+the jobs first). If the specified partition is in use, the request is denied.
 .IP
 
 .TP
@@ -239,8 +239,9 @@ backfill future scheduling and won't be replaced by idle nodes in a reservation.
 The "reason" option sets each node's reason to a user\-defined message.
 A default reason of "reboot requested" is set if no other reason is set on the
 node.
-The reason will be appended with "reboot issued" when the reboot is issued and
-"reboot complete" when the node registers and has a "nextstate" of "DOWN".
+The reason will be appended with: "reboot issued" when the reboot is issued;
+"reboot complete" when the node registers and has a "nextstate" of "DOWN"; or
+"reboot timed out" when the node fails to register within \fBResumeTimeout\fR.
 You must specify either a list of nodes or that ALL nodes are to be rebooted.
 NOTE: By default, this command does not prevent additional jobs from being
 scheduled on any nodes before reboot.
@@ -257,16 +258,15 @@ A node will be marked "DOWN" if it doesn't reboot within \fBResumeTimeout\fR.
 \fBreconfigure\fR
 Instruct all Slurm daemons to re\-read the configuration file.
 This command does not restart the daemons.
-This mechanism would be used to modify configuration parameters (Epilog,
-Prolog, SlurmctldLogFile, SlurmdLogFile, etc.).
+This mechanism can be used to modify configuration parameters set in
+slurm.conf.
 The Slurm controller (slurmctld) forwards the request to all other daemons
 (slurmd daemon on each compute node). Running jobs continue execution.
-Most configuration parameters can be changed by just running this command,
-however, Slurm daemons should be shutdown and restarted if any of these
-parameters are to be changed: AuthType, ControlMach, PluginDir,
-StateSaveLocation, SlurmctldHost, SlurmctldPort,
-or SlurmdPort. The slurmctld daemon and all slurmd daemons must be
-restarted if nodes are added to or removed from the cluster.
+Most configuration parameters can be changed by just running this command;
+however, there are parameters that require a restart of the relevant Slurm
+daemons. Parameters requiring a restart will be noted in the
+\fBslurm.conf\fR(5) man page. The slurmctld daemon and all slurmd daemons
+must also be restarted if nodes are added to or removed from the cluster.
 .IP
 
 .TP
@@ -1414,12 +1414,22 @@ current time limit, the \fIStepId\fP specification must precede the
 \fITimeLimit\fP specification.
 .IP
 
+.SH "NODES \- SPECIFICATIONS FOR CREATE COMMAND"
+
+Provide the same NodeName configration as found in the slurm.conf. See
+slurm.conf man page for details. Only State=CLOUD and State=FUTURE nodes are
+allowed.
+
 .SH "NODES \- SPECIFICATIONS FOR UPDATE COMMAND"
 
 .TP
 \fBNodeName\fR=<\fIname\fR>
 Identify the node(s) to be updated. Multiple node names may be specified using
-simple node range expressions (e.g. "lx[10\-20]"). This specification is required.
+simple node range expressions (e.g. "lx[10\-20]"). Nodesets can also be
+specified by themselves or mixed with node range expressions, using a comma as
+a list separator. If the keyword "ALL" is specified alone, then the update
+will be attempted against all the nodes in the local cluster. This specification
+is required.
 .IP
 
 .TP
@@ -1434,6 +1444,10 @@ however \fIActiveFeatures\fP may be configured as a subset of the
 configurations. In that case, all possible configurations may be identified as
 \fIAvailableFeatures\fP, while \fIActiveFeatures\fP would identify the current
 node configuration.
+When updating the ActiveFeatures with scontrol, the change is only made in
+slurmctld. When using a node_features plugin the state/features of the node
+must be updated on the node such that a new node start will report the updated
+state/features.
 .IP
 
 .TP
@@ -1639,6 +1653,18 @@ Update slurm.conf with any changes meant to be persistent across normal
 restarts of slurmctld or the execution of \fBscontrol reconfig\fR.
 .IP
 
+.SH "NODES \- SPECIFICATIONS FOR DELETE COMMAND"
+
+.TP
+\fBNodeName\fR=<\fInodes\fR>
+Identify the node(s) to be deleted. Multiple node names may be specified using
+simple node range expressions (e.g. "lx[10\-20]"). Nodesets can also be
+specified by themselves or mixed with node range expressions, using a comma as
+a list separator. If the keyword "ALL" is specified alone, then the update
+will be attempted against all the nodes in the local cluster. This specification
+is required.
+.IP
+
 .SH "NODES \- SPECIFICATIONS FOR SHOW COMMAND"
 
 .TP
@@ -1754,7 +1780,10 @@ DYNAMIC state indicates that the node was started as a Dynamic Future node.
 
 .TP
 \fBINVALID_REG\fR
-The node did not register correctly with the controller.
+The node did not register correctly with the controller. This happens when
+a node registers with less resources than configured in the slurm.conf file.
+The node will clear from this state with a valid registration (i.e. a slurmd
+restart is required).
 .IP
 
 .TP
@@ -2004,7 +2033,7 @@ The memory size is specified in megabytes.
 .IP
 
 .TP
-\fBMaxMemPerCNode\fR=<\fIMB\fR>
+\fBMaxMemPerNode\fR=<\fIMB\fR>
 Set the maximum memory to be allocated per node for jobs in this partition.
 The memory size is specified in megabytes.
 .IP
@@ -2194,7 +2223,7 @@ See the slurm.conf man page for more information.
 Identify the name of the reservation to be created, updated, or deleted.
 This parameter is required for update and is the only parameter for delete.
 For create, if you do not want to give a reservation name, use
-"scontrol create res ..." and a name will be created automatically.
+"scontrol create reservation ..." and a name will be created automatically.
 .IP
 
 .TP
@@ -2392,6 +2421,11 @@ supported.
 Ignore currently running jobs when creating the reservation.
 This can be especially useful when reserving all nodes in the system
 for maintenance.
+.IP
+
+.TP
+\fBHOURLY\fR
+Repeat the reservation at the same time every hour.
 .IP
 
 .TP

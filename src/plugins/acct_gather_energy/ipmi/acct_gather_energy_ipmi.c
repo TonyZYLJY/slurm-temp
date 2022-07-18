@@ -59,6 +59,7 @@
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/fd.h"
+#include "src/common/xstring.h"
 #include "src/slurmd/common/proctrack.h"
 
 #include "src/slurmd/slurmd/slurmd.h"
@@ -600,7 +601,7 @@ static int _thread_init(void)
 	int rc = SLURM_SUCCESS;
 	uint16_t i;
 
-	if (!first)
+	if (!first && ipmi_ctx)
 		return first_init;
 	first = false;
 
@@ -802,8 +803,8 @@ static int _get_joules_task(uint16_t delta)
 
 	xassert(context_id != -1);
 
-	if (slurm_get_node_energy(
-		    NULL, context_id, delta, &sensor_cnt, &energies)) {
+	if (slurm_get_node_energy(conf->node_name, context_id, delta,
+				  &sensor_cnt, &energies)) {
 		error("_get_joules_task: can't get info from slurmd");
 		return SLURM_ERROR;
 	}
@@ -834,9 +835,18 @@ static int _get_joules_task(uint16_t delta)
 				new->current_watts);
 
 		if (!first) {
-			new->consumed_energy -= start_current_energies[i];
-			new->base_consumed_energy = adjustment +
-				(new->consumed_energy - old->consumed_energy);
+			/* if slurmd is reloaded while the step is alive */
+			if (old->consumed_energy > new->consumed_energy)
+				new->base_consumed_energy =
+					new->consumed_energy + adjustment;
+			else {
+				new->consumed_energy -=
+					start_current_energies[i];
+				new->base_consumed_energy =
+					adjustment +
+					(new->consumed_energy -
+					 old->consumed_energy);
+			}
 		} else {
 			/* This is just for the step, so take all the pervious
 			   consumption out of the mix.
@@ -926,8 +936,10 @@ extern int fini(void)
 	/* clean up the run thread */
 	slurm_cond_signal(&ipmi_cond);
 
-	if (ipmi_ctx)
+	if (ipmi_ctx) {
 		ipmi_monitoring_ctx_destroy(ipmi_ctx);
+		ipmi_ctx = NULL;
+	}
 	reset_slurm_ipmi_conf(&slurm_ipmi_conf);
 
 	slurm_mutex_unlock(&ipmi_mutex);
@@ -935,15 +947,25 @@ extern int fini(void)
 	if (thread_ipmi_id_run)
 		pthread_join(thread_ipmi_id_run, NULL);
 
-	xfree(sensors);
-	xfree(start_current_energies);
+	/*
+	 * We don't really want to destroy the sensors nor the initial state,
+	 * so those values persist a reconfig. And if the process dies, this
+	 * will be lost anyway. So not freeing these variables is not really a
+	 * leak.
+	 *
+	 * xfree(sensors);
+	 * xfree(start_current_energies);
+	 */
 
 	for (i = 0; i < descriptions_len; ++i) {
 		xfree(descriptions[i].label);
 		xfree(descriptions[i].sensor_idxs);
 	}
 	xfree(descriptions);
+	descriptions = NULL;
+	descriptions_len = 0;
 
+	flag_init = false;
 	return SLURM_SUCCESS;
 }
 

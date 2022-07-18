@@ -201,6 +201,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	char **mpi_env = NULL;
 	int rc = SLURM_SUCCESS;
 	bool preserve_env = params->preserve_env;
+	uint32_t mpi_plugin_id;
 
 	debug("Entering %s", __func__);
 	memset(&launch, 0, sizeof(launch));
@@ -222,7 +223,8 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 		       sizeof(slurm_step_launch_callbacks_t));
 	}
 
-	if (mpi_g_client_init(params->mpi_plugin_name) == SLURM_ERROR) {
+	mpi_plugin_id = mpi_g_client_init((char **)&params->mpi_plugin_name);
+	if (!mpi_plugin_id) {
 		slurm_seterrno(SLURM_MPI_PLUGIN_NAME_INVALID);
 		return SLURM_ERROR;
 	}
@@ -288,6 +290,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	else
 		launch.cwd = _lookup_cwd();
 	launch.alias_list	= params->alias_list;
+	launch.mpi_plugin_id = mpi_plugin_id;
 	launch.nnodes		= ctx->step_resp->step_layout->node_cnt;
 	launch.ntasks		= ctx->step_resp->step_layout->task_cnt;
 	launch.slurmd_debug	= params->slurmd_debug;
@@ -418,12 +421,19 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 	int rc = SLURM_SUCCESS;
 	uint16_t resp_port = 0;
 	bool preserve_env = params->preserve_env;
+	uint32_t mpi_plugin_id;
 
 	debug("Entering %s", __func__);
 
 	if ((ctx == NULL) || (ctx->magic != STEP_CTX_MAGIC)) {
 		error("%s: Not a valid slurm_step_ctx_t", __func__);
 		slurm_seterrno(EINVAL);
+		return SLURM_ERROR;
+	}
+
+	mpi_plugin_id = mpi_g_client_init((char **)&params->mpi_plugin_name);
+	if (!mpi_plugin_id) {
+		slurm_seterrno(SLURM_MPI_PLUGIN_NAME_INVALID);
 		return SLURM_ERROR;
 	}
 
@@ -474,6 +484,7 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 	else
 		launch.cwd = _lookup_cwd();
 	launch.alias_list	= params->alias_list;
+	launch.mpi_plugin_id = mpi_plugin_id;
 	launch.nnodes		= ctx->step_resp->step_layout->node_cnt;
 	launch.ntasks		= ctx->step_resp->step_layout->task_cnt;
 	launch.slurmd_debug	= params->slurmd_debug;
@@ -838,6 +849,7 @@ extern void slurm_step_launch_fwd_signal(slurm_step_ctx_t *ctx, int signo)
 	hostlist_destroy(hl);
 
 RESEND:	slurm_msg_t_init(&req);
+	slurm_msg_set_r_uid(&req, SLURM_AUTH_UID_ANY);
 	req.msg_type = REQUEST_SIGNAL_TASKS;
 	req.data     = &msg;
 
@@ -1573,7 +1585,7 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 			 uint32_t timeout, char *nodelist)
 {
 #ifdef HAVE_FRONT_END
-	slurm_cred_arg_t cred_args;
+	slurm_cred_arg_t *cred_args;
 #endif
 	slurm_msg_t msg;
 	List ret_list = NULL;
@@ -1604,17 +1616,20 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 	}
 
 	slurm_msg_t_init(&msg);
+	slurm_msg_set_r_uid(&msg, SLURM_AUTH_UID_ANY);
 	msg.msg_type = REQUEST_LAUNCH_TASKS;
 	msg.data = launch_msg;
 
 	if (ctx->step_resp->use_protocol_ver)
 		msg.protocol_version = ctx->step_resp->use_protocol_ver;
+	else
+		msg.protocol_version = SLURM_PROTOCOL_VERSION;
 
 #ifdef HAVE_FRONT_END
-	slurm_cred_get_args(ctx->step_resp->cred, &cred_args);
-	//info("hostlist=%s", cred_args.step_hostlist);
-	ret_list = slurm_send_recv_msgs(cred_args.step_hostlist, &msg, timeout);
-	slurm_cred_free_args(&cred_args);
+	cred_args = slurm_cred_get_args(ctx->step_resp->cred);
+	//info("hostlist=%s", cred_args->step_hostlist);
+	ret_list = slurm_send_recv_msgs(cred_args->step_hostlist, &msg, timeout);
+	slurm_cred_unlock_args(ctx->step_resp->cred);
 #else
 	ret_list = slurm_send_recv_msgs(nodelist, &msg, timeout);
 #endif
@@ -1688,8 +1703,7 @@ static void _print_launch_msg(launch_tasks_request_msg_t *msg,
 	     &msg->step_id, hostname, msg->tasks_to_launch[nodeid], task_list);
 	xfree(task_list);
 
-	debug3("uid:%ld gid:%ld cwd:%s %d", (long) msg->uid,
-		(long) msg->gid, msg->cwd, nodeid);
+	debug3("uid:%u gid:%u cwd:%s %d", msg->uid, msg->gid, msg->cwd, nodeid);
 }
 
 /*

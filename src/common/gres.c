@@ -54,16 +54,6 @@ typedef cpuset_t cpu_set_t;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
-#ifdef MAJOR_IN_MKDEV
-#  include <sys/mkdev.h>
-#endif
-#ifdef MAJOR_IN_SYSMACROS
-#  include <sys/sysmacros.h>
-#endif
-
 #include <math.h>
 
 #ifdef __NetBSD__
@@ -104,7 +94,6 @@ strong_alias(gres_get_system_cnt, slurm_gres_get_system_cnt);
 strong_alias(gres_get_value_by_type, slurm_gres_get_value_by_type);
 strong_alias(gres_get_job_info, slurm_gres_get_job_info);
 strong_alias(gres_get_step_info, slurm_gres_get_step_info);
-strong_alias(gres_device_major, slurm_gres_device_major);
 strong_alias(gres_sock_delete, slurm_gres_sock_delete);
 strong_alias(gres_job_list_delete, slurm_gres_job_list_delete);
 strong_alias(destroy_gres_device, slurm_destroy_gres_device);
@@ -292,6 +281,9 @@ static void	_node_state_log(gres_node_state_t *gres_ns, char *node_name,
 static int	_parse_gres_config(void **dest, slurm_parser_enum_t type,
 				   const char *key, const char *value,
 				   const char *line, char **leftover);
+static int _parse_gres_config_dummy(void **dest, slurm_parser_enum_t type,
+				    const char *key, const char *value,
+				    const char *line, char **leftover);
 static int	_parse_gres_config_node(void **dest, slurm_parser_enum_t type,
 					const char *key, const char *value,
 					const char *line, char **leftover);
@@ -391,7 +383,8 @@ extern int gres_find_job_by_key_with_cnt(void *x, void *key)
 
 	/* This gres has been allocated on this node */
 	if (!gres_js->node_cnt ||
-	    gres_js->gres_cnt_node_alloc[job_key->node_offset])
+	    ((job_key->node_offset < gres_js->node_cnt) &&
+	     gres_js->gres_cnt_node_alloc[job_key->node_offset]))
 		return 1;
 
 	return 0;
@@ -1154,6 +1147,8 @@ static char *_get_autodetect_flags_str(void)
 			xstrfmtcat(flags, "%snvml", flags ? "," : "");
 		else if (autodetect_flags & GRES_AUTODETECT_GPU_RSMI)
 			xstrfmtcat(flags, "%srsmi", flags ? "," : "");
+		else if (autodetect_flags & GRES_AUTODETECT_GPU_ONEAPI)
+			xstrfmtcat(flags, "%soneapi", flags ? "," : "");
 		else if (autodetect_flags & GRES_AUTODETECT_GPU_OFF)
 			xstrfmtcat(flags, "%soff", flags ? "," : "");
 	}
@@ -1170,6 +1165,8 @@ static uint32_t _handle_autodetect_flags(char *str)
 		flags |= GRES_AUTODETECT_GPU_NVML;
 	else if (xstrcasestr(str, "rsmi"))
 		flags |= GRES_AUTODETECT_GPU_RSMI;
+	else if (xstrcasestr(str, "oneapi"))
+		flags |= GRES_AUTODETECT_GPU_ONEAPI;
 	else if (!xstrcasecmp(str, "off"))
 		flags |= GRES_AUTODETECT_GPU_OFF;
 	else
@@ -1255,6 +1252,8 @@ extern uint32_t gres_flags_parse(char *input, bool *no_gpu_env,
 		flags |= GRES_CONF_ENV_NVML;
 	if (xstrcasestr(input, "amd_gpu_env"))
 		flags |= GRES_CONF_ENV_RSMI;
+	if (xstrcasestr(input, "intel_gpu_env"))
+		flags |= GRES_CONF_ENV_ONEAPI;
 	if (xstrcasestr(input, "opencl_env"))
 		flags |= GRES_CONF_ENV_OPENCL;
 	if (xstrcasestr(input, "one_sharing"))
@@ -2265,7 +2264,8 @@ extern int gres_g_node_config_load(uint32_t cpu_cnt, char *node_name,
 				   void *xcpuinfo_abs_to_mac,
 				   void *xcpuinfo_mac_to_abs)
 {
-	static s_p_options_t _gres_options[] = {
+	/* Keep options in sync with gres_parse_config_dummy(). */
+	static s_p_options_t _gres_conf_options[] = {
 		{"AutoDetect", S_P_STRING},
 		{"Name",     S_P_ARRAY, _parse_gres_config,  NULL},
 		{"NodeName", S_P_ARRAY, _parse_gres_config_node, NULL},
@@ -2317,8 +2317,8 @@ extern int gres_g_node_config_load(uint32_t cpu_cnt, char *node_name,
 		}
 
 		gres_cpu_cnt = cpu_cnt;
-		tbl = s_p_hashtbl_create(_gres_options);
-		if (s_p_parse_file(tbl, NULL, gres_conf_file, false) ==
+		tbl = s_p_hashtbl_create(_gres_conf_options);
+		if (s_p_parse_file(tbl, NULL, gres_conf_file, false, NULL) ==
 		    SLURM_ERROR)
 			fatal("error opening/reading %s", gres_conf_file);
 
@@ -6106,7 +6106,7 @@ extern int gres_job_revalidate2(uint32_t job_id, List job_gres_list,
 	for (i = i_first; i <= i_last; i++) {
 		if (!bit_test(node_bitmap, i))
 			continue;
-		node_ptr = node_record_table_ptr + i;
+		node_ptr = node_record_table_ptr[i];
 		node_inx++;
 		if (!_validate_node_gres_cnt(job_id, job_gres_list, node_inx,
 					     node_ptr->gres_list,
@@ -8703,8 +8703,7 @@ static void _translate_step_to_global_device_index(bitstr_t **usable_gres,
  */
 static bitstr_t *_get_usable_gres_cpu_affinity(int context_inx,
 					       pid_t pid,
-					       bitstr_t *gres_bit_alloc,
-				     	       bool get_devices)
+					       bitstr_t *gres_bit_alloc)
 {
 #if defined(__APPLE__)
 	return NULL;
@@ -8720,7 +8719,7 @@ static bitstr_t *_get_usable_gres_cpu_affinity(int context_inx,
 	ListIterator iter;
 	gres_slurmd_conf_t *gres_slurmd_conf;
 	int gres_inx = 0;
-	int bitmap_size, set_count;
+	int bitmap_size;
 
 	if (!gres_conf_list) {
 		error("gres_conf_list is null!");
@@ -8775,15 +8774,7 @@ static bitstr_t *_get_usable_gres_cpu_affinity(int context_inx,
 	cpuset_destroy(mask);
 #endif
 
-	if (!get_devices && gres_use_local_device_index()) {
-		bit_and(usable_gres, gres_bit_alloc);
-		set_count = bit_set_count(usable_gres);
-		bit_clear_all(usable_gres);
-		if (set_count)
-			bit_nset(usable_gres, 0, set_count - 1);
-	} else {
-		bit_and(usable_gres, gres_bit_alloc);
-	}
+	bit_and(usable_gres, gres_bit_alloc);
 
 	return usable_gres;
 #endif
@@ -8930,7 +8921,7 @@ static bitstr_t *_get_usable_gres_map_or_mask(char *map_or_mask,
 {
 	bitstr_t *usable_gres = NULL;
 	char *tmp, *tok, *save_ptr = NULL, *mult;
-	int i, task_offset = 0, task_mult, bitmap_size, set_count;
+	int i, task_offset = 0, task_mult, bitmap_size;
 	int value, min, max;
 
 	if (!map_or_mask || !map_or_mask[0])
@@ -8983,10 +8974,7 @@ end:
 				&usable_gres, gres_bit_alloc);
 		else{
 			bit_and(usable_gres, gres_bit_alloc);
-			set_count = bit_set_count(usable_gres);
-			bit_clear_all(usable_gres);
-			if (set_count)
-				bit_nset(usable_gres, 0, set_count - 1);
+			bit_consolidate(usable_gres);
 		}
 	} else {
 		bit_and(usable_gres, gres_bit_alloc);
@@ -9084,14 +9072,16 @@ static void _parse_tres_bind(uint16_t accel_bind_type, char *tres_bind_str,
 				GRES_INTERNAL_FLAG_VERBOSE;
 		}
 		if (!xstrncasecmp(sep, "single:", 7)) {
+			long tasks_per_gres;
 			sep += 7;
-			tres_bind->tasks_per_gres = strtol(sep, NULL, 0);
-			if ((tres_bind->tasks_per_gres <= 0) ||
-			    (tres_bind->tasks_per_gres == LONG_MAX)) {
+			tasks_per_gres = strtol(sep, NULL, 0);
+			if ((tasks_per_gres <= 0) ||
+			    (tasks_per_gres > UINT32_MAX)) {
 				error("%s: single:%s does not specify a valid number. Defaulting to 1.",
 				      __func__, sep);
-				tres_bind->tasks_per_gres = 1;
+				tasks_per_gres = 1;
 			}
+			tres_bind->tasks_per_gres = tasks_per_gres;
 			tres_bind->bind_gpu = true;
 		} else if (!xstrncasecmp(sep, "closest", 7))
 			tres_bind->bind_gpu = true;
@@ -9132,10 +9122,12 @@ static int _get_usable_gres(char *gres_name, int context_inx, int proc_id,
 				false, get_devices);
 		} else if (tres_bind->bind_gpu) {
 			usable_gres = _get_usable_gres_cpu_affinity(
-				context_inx, pid, gres_bit_alloc, get_devices);
+				context_inx, pid, gres_bit_alloc);
 			_filter_usable_gres(usable_gres,
 					    tres_bind->tasks_per_gres,
 					    proc_id);
+			if (!get_devices && gres_use_local_device_index())
+				bit_consolidate(usable_gres);
 		} else if (tres_bind->gpus_per_task) {
 			if(!get_devices && gres_use_local_device_index()){
 				usable_gres = bit_alloc(
@@ -9151,9 +9143,12 @@ static int _get_usable_gres(char *gres_name, int context_inx, int proc_id,
 		} else
 			return SLURM_ERROR;
 	} else if (!xstrcmp(gres_name, "nic")) {
-		if (tres_bind->bind_nic)
+		if (tres_bind->bind_nic) {
 			usable_gres = _get_usable_gres_cpu_affinity(
-				context_inx, pid, gres_bit_alloc, get_devices);
+				context_inx, pid, gres_bit_alloc);
+			if (!get_devices && gres_use_local_device_index())
+				bit_consolidate(usable_gres);
+		}
 		else
 			return SLURM_ERROR;
 	} else {
@@ -9899,32 +9894,17 @@ extern void gres_clear_tres_cnt(uint64_t *tres_cnt, bool locked)
 		assoc_mgr_unlock(&locks);
 }
 
-extern char *gres_device_major(char *dev_path)
+extern char *gres_device_id2str(gres_device_id_t *gres_dev)
 {
-	int loc_major, loc_minor;
-	char *ret_major = NULL;
-	struct stat fs;
+	char *res = NULL;
 
-	if (stat(dev_path, &fs) < 0) {
-		error("%s: stat(%s): %m", __func__, dev_path);
-		return NULL;
-	}
-	loc_major = (int)major(fs.st_rdev);
-	loc_minor = (int)minor(fs.st_rdev);
-	debug3("%s : %s major %d, minor %d",
-	       __func__, dev_path, loc_major, loc_minor);
-	if (S_ISBLK(fs.st_mode)) {
-		xstrfmtcat(ret_major, "b %d:", loc_major);
-		//info("device is block ");
-	}
-	if (S_ISCHR(fs.st_mode)) {
-		xstrfmtcat(ret_major, "c %d:", loc_major);
-		//info("device is character ");
-	}
-	xstrfmtcat(ret_major, "%d rwm", loc_minor);
+	xstrfmtcat(res, "%c %u:%u rwm",
+		   gres_dev->type == DEV_TYPE_BLOCK ? 'b' : 'c',
+		   gres_dev->major, gres_dev->minor);
 
-	return ret_major;
+	return res;
 }
+
 
 /* Free memory for gres_device_t record */
 extern void destroy_gres_device(void *gres_device_ptr)
@@ -9934,7 +9914,6 @@ extern void destroy_gres_device(void *gres_device_ptr)
 	if (!gres_device)
 		return;
 	xfree(gres_device->path);
-	xfree(gres_device->major);
 	xfree(gres_device->unique_id);
 	xfree(gres_device);
 }
@@ -9999,6 +9978,12 @@ extern char *gres_flags2str(uint32_t config_flags)
 	if (config_flags & GRES_CONF_ENV_RSMI) {
 		strcat(flag_str, sep);
 		strcat(flag_str, "ENV_RSMI");
+		sep = ",";
+	}
+
+	if (config_flags & GRES_CONF_ENV_ONEAPI) {
+		strcat(flag_str, sep);
+		strcat(flag_str, "ENV_ONEAPI");
 		sep = ",";
 	}
 
@@ -10111,6 +10096,7 @@ extern char *gres_prepend_tres_type(const char *gres_str)
 	if (gres_str) {
 		output = xstrdup_printf("gres:%s", gres_str);
 		xstrsubstituteall(output, ",", ",gres:");
+		xstrsubstituteall(output, "gres:gres:", "gres:");
 	}
 	return output;
 }
@@ -10129,4 +10115,39 @@ extern bool gres_use_busy_dev(gres_state_t *gres_state_node,
 	}
 
 	return false;
+}
+
+static int _parse_gres_config_dummy(void **dest, slurm_parser_enum_t type,
+				    const char *key, const char *value,
+				    const char *line, char **leftover)
+{
+	s_p_hashtbl_t *tbl = s_p_hashtbl_create(_gres_options);
+	s_p_parse_line(tbl, *leftover, leftover);
+	s_p_hashtbl_destroy(tbl);
+
+	return SLURM_SUCCESS;
+}
+
+extern void gres_parse_config_dummy(void)
+{
+	/* Keep options in sync with node_config_load(). */
+	static s_p_options_t _gres_conf_options[] = {
+		{"AutoDetect", S_P_STRING},
+		{"Name", S_P_ARRAY, _parse_gres_config_dummy, NULL},
+		{"NodeName", S_P_ARRAY, _parse_gres_config_dummy, NULL},
+		{NULL}
+	};
+	struct stat stat_buf;
+	s_p_hashtbl_t *tbl;
+	char *gres_conf_file = get_extra_conf_path("gres.conf");
+
+	if (stat(gres_conf_file, &stat_buf) < 0) {
+		xfree(gres_conf_file);
+		return;
+	}
+
+	tbl = s_p_hashtbl_create(_gres_conf_options);
+	s_p_parse_file(tbl, NULL, gres_conf_file, false, NULL);
+	s_p_hashtbl_destroy(tbl);
+	xfree(gres_conf_file);
 }

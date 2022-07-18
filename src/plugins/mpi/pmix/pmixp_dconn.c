@@ -36,7 +36,9 @@
 
 #include "pmixp_dconn.h"
 #include "pmixp_dconn_tcp.h"
+#ifdef HAVE_UCX
 #include "pmixp_dconn_ucx.h"
+#endif
 
 pmixp_dconn_t *_pmixp_dconn_conns = NULL;
 uint32_t _pmixp_dconn_conn_cnt = 0;
@@ -79,6 +81,7 @@ int pmixp_dconn_init(int node_cnt, pmixp_p2p_data_t direct_hdr)
 		_pmixp_dconn_conns[i].nodeid = i;
 		_pmixp_dconn_conns[i].state = PMIXP_DIRECT_INIT;
 		_pmixp_dconn_conns[i].priv = _pmixp_dconn_h.init(i, direct_hdr);
+		_pmixp_dconn_conns[i].uid = slurm_conf.slurmd_user_id;
 	}
 	return SLURM_SUCCESS;
 }

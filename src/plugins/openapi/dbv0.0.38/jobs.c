@@ -176,7 +176,7 @@ static const csv_list_t csv_lists[] = {
 	{ "wckey", offsetof(slurmdb_job_cond_t, wckey_list) },
 };
 
-data_for_each_cmd_t _foreach_step(data_t *data, void *arg)
+static data_for_each_cmd_t _foreach_step(data_t *data, void *arg)
 {
 	List list = arg;
 
@@ -189,8 +189,9 @@ data_for_each_cmd_t _foreach_step(data_t *data, void *arg)
 	return DATA_FOR_EACH_CONT;
 }
 
-data_for_each_cmd_t _foreach_query_search(const char *key, data_t *data,
-					  void *arg)
+static data_for_each_cmd_t _foreach_query_search(const char *key,
+						 data_t *data,
+						 void *arg)
 {
 	foreach_query_search_t *args = arg;
 	data_t *errors = args->errors;
@@ -431,8 +432,7 @@ extern int op_handler_jobs(const char *context_id, http_request_method_t method,
 			 * default to grabbing all information
 			 * based on _init_params()
 			 */
-			.flags = (JOBCOND_FLAG_DUP | JOBCOND_FLAG_NO_TRUNC |
-				  JOBCOND_FLAG_WHOLE_HETJOB),
+			.flags = (JOBCOND_FLAG_DUP | JOBCOND_FLAG_NO_TRUNC),
 			.db_flags = SLURMDB_JOB_FLAG_NOTSET,
 		};
 		foreach_query_search_t args = {
@@ -459,8 +459,7 @@ static int _op_handler_job(const char *context_id, http_request_method_t method,
 	data_t *errors = populate_response_format(resp);
 	char *jobid;
 	slurmdb_job_cond_t job_cond = {
-		.flags = (JOBCOND_FLAG_DUP | JOBCOND_FLAG_NO_TRUNC |
-			  JOBCOND_FLAG_WHOLE_HETJOB),
+		.flags = (JOBCOND_FLAG_DUP | JOBCOND_FLAG_NO_TRUNC),
 		.db_flags = SLURMDB_JOB_FLAG_NOTSET,
 	};
 

@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "src/common/assoc_mgr.h"
 #include "src/common/cpu_frequency.h"
@@ -68,6 +69,7 @@
 
 #include "src/slurmd/common/core_spec_plugin.h"
 #include "src/slurmd/common/job_container_plugin.h"
+#include "src/slurmd/common/set_oomadj.h"
 #include "src/slurmd/common/slurmstepd_init.h"
 #include "src/common/slurm_acct_gather_energy.h"
 #include "src/slurmd/common/proctrack.h"
@@ -211,7 +213,13 @@ extern int stepd_cleanup(slurm_msg_t *msg, stepd_step_rec_t *job,
 		pthread_join(job->msgid, NULL);
 	}
 
-	mpi_fini();	/* Remove stale PMI2 sockets */
+	mpi_fini();
+
+	/*
+	 * This call is only done once per step since stepd_cleanup is protected
+	 * agains multiple and concurrent calls.
+	 */
+	proctrack_g_destroy(job->cont_id);
 
 	if (conf->hwloc_xml)
 		(void)remove(conf->hwloc_xml);
@@ -461,6 +469,11 @@ static int _process_cmdline (int argc, char **argv)
 		_dump_user_env();
 		exit(0);
 	}
+	if ((argc == 2) && (xstrcmp(argv[1], "infinity") == 0)) {
+		set_oom_adj(-1000);
+		(void) poll(NULL, 0, -1);
+		exit(0);
+	}
 	if ((argc == 3) && (xstrcmp(argv[1], "spank") == 0)) {
 		if (_handle_spank_mode(argc, argv) < 0)
 			exit (1);
@@ -667,6 +680,13 @@ _init_from_slurmd(int sock, char **argv,
 	/* Receive GRES information from slurmd */
 	gres_g_recv_stepd(sock, msg);
 
+	/* Receive mpi.conf from slurmd */
+	if ((step_type == LAUNCH_TASKS) &&
+	    (step_id.step_id != SLURM_EXTERN_CONT) &&
+	    (step_id.step_id != SLURM_INTERACTIVE_STEP) &&
+	    (mpi_conf_recv_stepd(sock) != SLURM_SUCCESS))
+		fatal("Failed to read MPI conf from slurmd");
+
 	_set_job_log_prefix(&step_id);
 
 	if (!conf->hwloc_xml) {
@@ -732,6 +752,7 @@ _step_setup(slurm_addr_t *cli, slurm_addr_t *self, slurm_msg_t *msg)
 		} else if (rc) {
 			error("%s: container setup failed: %s",
 			      __func__, slurm_strerror(rc));
+			stepd_step_rec_destroy(job);
 			return NULL;
 		} else {
 			debug2("%s: container %s successfully setup",
@@ -763,6 +784,15 @@ _step_setup(slurm_addr_t *cli, slurm_addr_t *self, slurm_msg_t *msg)
 			    conf->node_topo_addr);
 	env_array_overwrite(&job->env,"SLURM_TOPOLOGY_ADDR_PATTERN",
 			    conf->node_topo_pattern);
+	/*
+	 * Reset address for cloud nodes
+	 */
+	if (job->alias_list && set_nodes_alias(job->alias_list)) {
+		error("%s: set_nodes_alias failed: %s", __func__,
+		      job->alias_list);
+		stepd_step_rec_destroy(job);
+		return NULL;
+	}
 
 	set_msg_node_id(job);
 

@@ -175,6 +175,7 @@ typedef struct slurm_acct_storage_ops {
 	int  (*node_down)          (void *db_conn, node_record_t *node_ptr,
 				    time_t event_time, char *reason,
 				    uint32_t reason_uid);
+	char *(*node_inx)          (void *db_conn, char *nodes);
 	int  (*node_up)            (void *db_conn, node_record_t *node_ptr,
 				    time_t event_time);
 	int  (*cluster_tres)       (void *db_conn, char *cluster_nodes,
@@ -207,6 +208,8 @@ typedef struct slurm_acct_storage_ops {
 	int (*clear_stats)         (void *db_conn);
 	int (*get_data)            (void *db_conn, acct_storage_info_t dinfo,
 				    void *data);
+	void (*send_all) (void *db_conn, time_t event_time,
+			  slurm_msg_type_t msg_type);
 	int (*shutdown)            (void *db_conn);
 } slurm_acct_storage_ops_t;
 /*
@@ -265,6 +268,7 @@ static const char *syms[] = {
 	"acct_storage_p_roll_usage",
 	"acct_storage_p_fix_runaway_jobs",
 	"clusteracct_storage_p_node_down",
+	"acct_storage_p_node_inx",
 	"clusteracct_storage_p_node_up",
 	"clusteracct_storage_p_cluster_tres",
 	"clusteracct_storage_p_register_ctld",
@@ -286,6 +290,7 @@ static const char *syms[] = {
 	"acct_storage_p_get_stats",
 	"acct_storage_p_clear_stats",
 	"acct_storage_p_get_data",
+	"acct_storage_p_send_all",
 	"acct_storage_p_shutdown",
 };
 
@@ -796,6 +801,13 @@ extern int clusteracct_storage_g_node_down(void *db_conn,
 				  reason, reason_uid);
 }
 
+extern char *acct_storage_g_node_inx(void *db_conn, char *nodes)
+{
+	if (slurm_acct_storage_init() < 0)
+		return NULL;
+	return (*(ops.node_inx))(db_conn, nodes);
+}
+
 extern int clusteracct_storage_g_node_up(void *db_conn,
 					 node_record_t *node_ptr,
 					 time_t event_time)
@@ -1090,6 +1102,18 @@ extern int acct_storage_g_get_data(void *db_conn, acct_storage_info_t dinfo,
 	return (*(ops.get_data))(db_conn, dinfo, data);
 }
 
+
+/*
+ * Send all relavant information to the DBD.
+ * RET: SLURM_SUCCESS on success SLURM_ERROR else
+ */
+extern void acct_storage_g_send_all(void *db_conn, time_t event_time,
+				    slurm_msg_type_t msg_type)
+{
+	if (slurm_acct_storage_init() < 0)
+		return;
+	(*(ops.send_all))(db_conn, event_time, msg_type);
+}
 
 /*
  * Shutdown database server.

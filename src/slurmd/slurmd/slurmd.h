@@ -57,6 +57,9 @@ extern int devnull;
 extern bool get_reg_resp;
 
 typedef struct {
+	int (*container_join)(uint32_t job_id, uid_t uid);
+	uint32_t derived_ec;
+	uint32_t exit_code;
 	char **gres_job_env;
 	uint32_t het_job_id;
 	uint32_t jobid;
@@ -115,6 +118,8 @@ typedef struct slurmd_config {
 	char         *node_topo_pattern;/* node's topology address pattern */
 	char         *conffile;		/* config filename                 */
 	char         *logfile;		/* slurmd logfile, if any          */
+	char         *pidfile;		/* slurmd pidfile, if any          */
+	char         *tmp_fs;		/* TmpFS                           */
 	uint32_t     syslog_debug;	/* send output to both logfile and
 					 * syslog */
 	char         *spooldir;		/* SlurmdSpoolDir		   */
@@ -145,7 +150,8 @@ typedef struct slurmd_config {
 	pthread_cond_t	prolog_running_cond;
 	bool		print_gres;	/* Print gres info (-G) and exit */
 
-	bool dynamic;			/* Dynamic future node */
+	uint8_t dynamic_type;		/* Dynamic node type */
+	char *dynamic_conf;		/* Dynamic configuration */
 	char *dynamic_feature;		/* Dynamic feature to register with */
 } slurmd_conf_t;
 

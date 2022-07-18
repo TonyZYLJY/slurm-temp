@@ -187,15 +187,6 @@ extern int make_batch_job_cred(batch_job_launch_msg_t *launch_msg_ptr,
  */
 extern bitstr_t *node_features_reboot(job_record_t *job_ptr);
 
-/*
- * Determine if node boot required for this job
- * IN job_ptr - pointer to job that will be initiated
- * IN node_bitmap - nodes to be allocated
- * RET - true if reboot required
- */
-extern bool node_features_reboot_test(job_record_t *job_ptr,
-				      bitstr_t *node_bitmap);
-
 /* Print a job's dependency information based upon job_ptr->depend_list */
 extern void print_job_dependency(job_record_t *job_ptr, const char *func);
 
@@ -240,6 +231,10 @@ extern void sort_job_queue(List job_queue);
 /* Note this differs from the ListCmpF typedef since we want jobs sorted
  *	in order of decreasing priority */
 extern int sort_job_queue2(void *x, void *y);
+
+/* sort job based on scheduling time */
+extern void sort_job_queue_outer(List job_queue);
+extern int sort_job_scheduling_queue(void *x, void *y);
 
 /*
  * Determine if a job's dependencies are met

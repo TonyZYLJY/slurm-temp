@@ -57,8 +57,6 @@
  *			  interpretation of core_bitmap
  * cpus			- Count of desired/allocated CPUs per node for job/step
  * cpus_used		- For a job, count of CPUs per node used by job steps
- * cpus_used_overlap	- For a job, count of CPUs per node used by job
- *			  overlapping steps
  * cpu_array_cnt	- Count of elements in cpu_array_* below
  * cpu_array_value	- Count of allocated CPUs per node for job
  * cpu_array_reps	- Number of consecutive nodes on which cpu_array_value
@@ -112,7 +110,6 @@ struct job_resources {
 	uint16_t *cpu_array_value;
 	uint32_t *cpu_array_reps;
 	uint16_t *cpus;
-	uint16_t *cpus_overlap;
 	uint16_t *cpus_used;
 	uint16_t *cores_per_socket;
 	uint16_t  cr_type;
@@ -162,10 +159,9 @@ extern job_resources_t *create_job_resources(void);
  *
  * job_resources_t *job_resrcs_ptr = create_job_resources();
  * node_name2bitmap("dummy[2,5,12,16]", true, &(job_res_ptr->node_bitmap));
- * rc = build_job_resources(job_resrcs_ptr, node_record_table_ptr);
+ * rc = build_job_resources(job_resrcs_ptr);
  */
-extern int build_job_resources(job_resources_t *job_resrcs_ptr,
-			       void *node_rec_table);
+extern int build_job_resources(job_resources_t *job_resrcs_ptr);
 
 /* Rebuild cpu_array_cnt, cpu_array_value, and cpu_array_reps based upon the
  * values of cpus in an existing data structure
@@ -188,7 +184,7 @@ extern int build_job_resources_cpus_array(job_resources_t *job_resrcs_ptr);
  * rc = valid_job_resources(job_resrcs_ptr, node_record_table_ptr);
  */
 extern int valid_job_resources(job_resources_t *job_resrcs_ptr,
-			       void *node_rec_table);
+			       node_record_t **node_rec_table);
 
 /* Make a copy of a job_resources data structure,
  * free using free_job_resources() */

@@ -112,6 +112,8 @@ typedef struct {
 	uint32_t taskid;
 } task_cg_info_t;
 
+static int _step_destroy_internal(cgroup_ctl_type_t sub, bool root_locked);
+
 static int _cgroup_init(cgroup_ctl_type_t sub)
 {
 	if (sub >= CG_CTL_CNT)
@@ -204,6 +206,10 @@ static int _cpuset_create(stepd_step_rec_t *job)
 		log_flag(CGROUP,
 			 "system cgroup: system cpuset cgroup initialized");
 	} else {
+		/*
+		 * We don't lock here the g_root cg[CG_CPUS] because it is
+		 * locked from the caller.
+		 */
 		rc = xcgroup_create_hierarchy(__func__,
 					      job,
 					      &g_cg_ns[CG_CPUS],
@@ -220,7 +226,8 @@ end:
 	return rc;
 }
 
-static int _remove_cg_subsystem(xcgroup_t int_cg[], const char *log_str)
+static int _remove_cg_subsystem(xcgroup_t int_cg[], const char *log_str,
+				bool root_locked)
 {
 	xcgroup_t *root_cg = &int_cg[CG_LEVEL_ROOT];
 	xcgroup_t *job_cg = &int_cg[CG_LEVEL_JOB];
@@ -246,8 +253,8 @@ static int _remove_cg_subsystem(xcgroup_t int_cg[], const char *log_str)
 	 * Lock the root cgroup so we don't race with other steps that are being
 	 * started.
 	 */
-	if (xcgroup_lock(root_cg) != SLURM_SUCCESS) {
-		error("xcgroup_lock error (%s)", log_str);
+	if (!root_locked && (common_cgroup_lock(root_cg) != SLURM_SUCCESS)) {
+		error("common_cgroup_lock error (%s)", log_str);
 		return SLURM_ERROR;
 	}
 
@@ -281,7 +288,8 @@ static int _remove_cg_subsystem(xcgroup_t int_cg[], const char *log_str)
 	common_cgroup_destroy(slurm_cg);
 
 end:
-	xcgroup_unlock(root_cg);
+	if (!root_locked)
+		common_cgroup_unlock(root_cg);
 	return rc;
 }
 
@@ -495,6 +503,11 @@ extern int cgroup_p_system_create(cgroup_ctl_type_t sub)
 			goto end;
 		}
 		break;
+	case CG_TRACK:
+	case CG_DEVICES:
+	case CG_CPUACCT:
+		error("This operation is not supported for %s", g_cg_name[sub]);
+		return SLURM_ERROR;
 	default:
 		error("cgroup subsystem %u not supported", sub);
 		return SLURM_ERROR;
@@ -520,19 +533,24 @@ extern int cgroup_p_system_addto(cgroup_ctl_type_t sub, pid_t *pids, int npids)
 	case CG_DEVICES:
 		break;
 	case CG_CPUACCT:
-		error("This operation is not supported for %s", g_cg_name[sub]);
-		return SLURM_ERROR;
+		break;
 	default:
 		error("cgroup subsystem %u not supported", sub);
 		return SLURM_ERROR;
 	}
 
-	return common_cgroup_add_pids(&int_cg[sub][CG_LEVEL_STEP], pids, npids);
+	error("This operation is not supported for %s", g_cg_name[sub]);
+	return SLURM_ERROR;
 }
 
 extern int cgroup_p_system_destroy(cgroup_ctl_type_t sub)
 {
 	int rc = SLURM_SUCCESS;
+
+	/*
+	 * Note: we do not need to lock the root cgroup because the only user
+	 * of this function is a single thread of slurmd.
+	 */
 
 	/* Another plugin may have already destroyed this subsystem. */
 	if (!int_cg[sub][CG_LEVEL_SYSTEM].path)
@@ -540,16 +558,14 @@ extern int cgroup_p_system_destroy(cgroup_ctl_type_t sub)
 
 	/* Custom actions for every cgroup subsystem */
 	switch (sub) {
-	case CG_TRACK:
-		break;
 	case CG_CPUS:
-		break;
 	case CG_MEMORY:
 		break;
+	case CG_TRACK:
 	case CG_DEVICES:
-		break;
 	case CG_CPUACCT:
-		break;
+		error("This operation is not supported for %s", g_cg_name[sub]);
+		return SLURM_SUCCESS;
 	default:
 		error("cgroup subsystem %u not supported", sub);
 		return SLURM_ERROR;
@@ -591,6 +607,16 @@ extern int cgroup_p_step_create(cgroup_ctl_type_t sub, stepd_step_rec_t *job)
 	/* Don't let other plugins destroy our structs. */
 	g_step_active_cnt[sub]++;
 
+	/*
+	 * Lock the root cgroup so we don't race with other steps that are being
+	 * terminated, they could remove the directories while we're creating
+	 * them.
+	 */
+	if (common_cgroup_lock(&int_cg[sub][CG_LEVEL_ROOT]) != SLURM_SUCCESS) {
+		error("common_cgroup_lock error");
+		return SLURM_ERROR;
+	}
+
 	switch (sub) {
 	case CG_TRACK:
 		/* create a new cgroup for that container */
@@ -624,7 +650,7 @@ extern int cgroup_p_step_create(cgroup_ctl_type_t sub, stepd_step_rec_t *job)
 						  "1")) != SLURM_SUCCESS) {
 			error("unable to set hierarchical accounting for %s",
 			      g_user_cgpath[sub]);
-			cgroup_p_step_destroy(sub);
+			_step_destroy_internal(sub, true);
 			break;
 		}
 		if ((rc = common_cgroup_set_param(&int_cg[sub][CG_LEVEL_JOB],
@@ -632,7 +658,7 @@ extern int cgroup_p_step_create(cgroup_ctl_type_t sub, stepd_step_rec_t *job)
 						  "1")) != SLURM_SUCCESS) {
 			error("unable to set hierarchical accounting for %s",
 			      g_job_cgpath[sub]);
-			cgroup_p_step_destroy(sub);
+			_step_destroy_internal(sub, true);
 			break;
 		}
 		if ((rc = common_cgroup_set_param(&int_cg[sub][CG_LEVEL_STEP],
@@ -640,7 +666,7 @@ extern int cgroup_p_step_create(cgroup_ctl_type_t sub, stepd_step_rec_t *job)
 						  "1") != SLURM_SUCCESS)) {
 			error("unable to set hierarchical accounting for %s",
 			      int_cg[sub][CG_LEVEL_STEP].path);
-			cgroup_p_step_destroy(sub);
+			_step_destroy_internal(sub, true);
 			break;
 		}
 		break;
@@ -672,11 +698,12 @@ extern int cgroup_p_step_create(cgroup_ctl_type_t sub, stepd_step_rec_t *job)
 		rc = SLURM_ERROR;
 		goto step_c_err;
 	}
-
+	common_cgroup_unlock(&int_cg[sub][CG_LEVEL_ROOT]);
 	return rc;
 
 step_c_err:
 	/* step cgroup is not created */
+	common_cgroup_unlock(&int_cg[sub][CG_LEVEL_ROOT]);
 	g_step_active_cnt[sub]--;
 	return rc;
 }
@@ -742,7 +769,7 @@ extern int cgroup_p_step_resume(void)
 				       "freezer.state", "THAWED");
 }
 
-extern int cgroup_p_step_destroy(cgroup_ctl_type_t sub)
+static int _step_destroy_internal(cgroup_ctl_type_t sub, bool root_locked)
 {
 	int rc = SLURM_SUCCESS;
 
@@ -783,7 +810,7 @@ extern int cgroup_p_step_destroy(cgroup_ctl_type_t sub)
 		break;
 	}
 
-	rc = _remove_cg_subsystem(int_cg[sub], g_cg_name[sub]);
+	rc = _remove_cg_subsystem(int_cg[sub], g_cg_name[sub], root_locked);
 
 	if (rc == SLURM_SUCCESS) {
 		g_step_active_cnt[sub] = 0;
@@ -791,6 +818,11 @@ extern int cgroup_p_step_destroy(cgroup_ctl_type_t sub)
 	}
 
 	return rc;
+}
+
+extern int cgroup_p_step_destroy(cgroup_ctl_type_t sub)
+{
+	return _step_destroy_internal(sub, false);
 }
 
 /*
@@ -867,6 +899,7 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 {
 	int rc = SLURM_SUCCESS;
 	task_cg_info_t *task_cg_info;
+	char *dev_str = NULL;
 #ifdef HAVE_NATIVE_CRAY
 	char expected_usage[32];
 	uint64_t exp;
@@ -963,20 +996,21 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 		}
 		break;
 	case CG_DEVICES:
+		dev_str = gres_device_id2str(&limits->device);
 		if (level == CG_LEVEL_STEP ||
 		    level == CG_LEVEL_JOB) {
 			if (limits->allow_device) {
 				if (common_cgroup_set_param(
 					    &int_cg[sub][level],
 					    "devices.allow",
-					    limits->device_major)
+					    dev_str)
 				    != SLURM_SUCCESS)
 					rc = SLURM_ERROR;
 			} else {
 				if (common_cgroup_set_param(
 					    &int_cg[sub][level],
 					    "devices.deny",
-					    limits->device_major)
+					    dev_str)
 				    != SLURM_SUCCESS)
 					rc = SLURM_ERROR;
 			}
@@ -997,12 +1031,12 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 				rc = common_cgroup_set_param(
 					&task_cg_info->task_cg,
 					"devices.allow",
-					limits->device_major);
+					dev_str);
 			} else {
 				rc = common_cgroup_set_param(
 					&task_cg_info->task_cg,
 					"devices.deny",
-					limits->device_major);
+					dev_str);
 			}
 		}
 		break;
@@ -1012,9 +1046,15 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 		break;
 	}
 
+	xfree(dev_str);
 	return rc;
 }
 
+extern int cgroup_p_constrain_apply(cgroup_ctl_type_t sub, cgroup_level_t level,
+                                    uint32_t task_id)
+{
+    return SLURM_SUCCESS;
+}
 
 /*
  * Code based on linux tools/cgroup/cgroup_event_listener.c with adapted
@@ -1265,8 +1305,9 @@ extern cgroup_oom_t *cgroup_p_step_stop_oom_mgr(stepd_step_rec_t *job)
 		goto fail_oom_results;
 	}
 
-	if (xcgroup_lock(&int_cg[CG_MEMORY][CG_LEVEL_STEP]) != SLURM_SUCCESS) {
-		error("xcgroup_lock error: %m");
+	if (common_cgroup_lock(&int_cg[CG_MEMORY][CG_LEVEL_STEP]) !=
+	    SLURM_SUCCESS) {
+		error("common_cgroup_lock error: %m");
 		goto fail_oom_results;
 	}
 
@@ -1282,7 +1323,7 @@ extern cgroup_oom_t *cgroup_p_step_stop_oom_mgr(stepd_step_rec_t *job)
 	results->job_mem_failcnt = _failcnt(&int_cg[CG_MEMORY][CG_LEVEL_JOB],
 					    "memory.failcnt");
 
-	xcgroup_unlock(&int_cg[CG_MEMORY][CG_LEVEL_STEP]);
+	common_cgroup_unlock(&int_cg[CG_MEMORY][CG_LEVEL_STEP]);
 
 	/*
 	 * oom_thread created, but could have finished before we attempt
@@ -1383,6 +1424,7 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t taskid)
 	stats->ssec = NO_VAL64;
 	stats->total_rss = NO_VAL64;
 	stats->total_pgmajfault = NO_VAL64;
+	stats->total_vmem = NO_VAL64;
 
 	if (cpu_time != NULL)
 		sscanf(cpu_time, "%*s %"PRIu64" %*s %"PRIu64, &stats->usec, &stats->ssec);
@@ -1392,8 +1434,51 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t taskid)
 	if ((ptr = xstrstr(memory_stat, "total_pgmajfault")))
 		sscanf(ptr, "total_pgmajfault %"PRIu64, &stats->total_pgmajfault);
 
+	if (stats->total_rss != NO_VAL64) {
+		uint64_t total_cache = NO_VAL64, total_swap = NO_VAL64;
+
+		if ((ptr = xstrstr(memory_stat, "total_cache")))
+			sscanf(ptr, "total_cache %"PRIu64, &total_cache);
+		if ((ptr = xstrstr(memory_stat, "total_swap")))
+			sscanf(ptr, "total_swap %"PRIu64, &total_swap);
+
+		stats->total_vmem = stats->total_rss;
+		if (total_cache != NO_VAL64)
+			stats->total_vmem += total_cache;
+		if (total_swap != NO_VAL64)
+			stats->total_vmem += total_swap;
+	}
+
 	xfree(cpu_time);
 	xfree(memory_stat);
 
 	return stats;
+}
+
+/* cgroup/v1 usec and ssec are provided in USER_HZ. */
+extern long int cgroup_p_get_acct_units()
+{
+	return jobacct_gather_get_clk_tck();
+}
+
+extern bool cgroup_p_has_feature(cgroup_ctl_feature_t f)
+{
+	struct stat st;
+	int rc;
+	char *memsw_filepath = NULL;
+
+	/* Check if swap constrain capability is enabled in this system. */
+	switch (f) {
+	case CG_MEMCG_SWAP:
+		xstrfmtcat(memsw_filepath,
+			   "%s/memory/memory.memsw.limit_in_bytes",
+			   slurm_cgroup_conf.cgroup_mountpoint);
+		rc = stat(memsw_filepath, &st);
+		xfree(memsw_filepath);
+		return (rc == 0);
+	default:
+		break;
+	}
+
+	return false;
 }

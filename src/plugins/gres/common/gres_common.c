@@ -34,7 +34,18 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
+#include "config.h"
+
 #include <ctype.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#ifdef MAJOR_IN_MKDEV
+#  include <sys/mkdev.h>
+#endif
+#ifdef MAJOR_IN_SYSMACROS
+#  include <sys/sysmacros.h>
+#endif
 
 #include "gres_common.h"
 
@@ -63,18 +74,53 @@ static int _match_name_list(void *x, void *key)
 	return 0;
 }
 
+static int _set_gres_device_desc(gres_device_t *dev)
+{
+	struct stat fs;
+
+	dev->dev_desc.type = DEV_TYPE_NONE;
+	dev->dev_desc.major = NO_VAL;
+	dev->dev_desc.minor = NO_VAL;
+
+	if (stat(dev->path, &fs) < 0) {
+		error("%s: stat(%s): %m", __func__, dev->path);
+		return SLURM_ERROR;
+	}
+
+	dev->dev_desc.major = major(fs.st_rdev);
+	dev->dev_desc.minor = minor(fs.st_rdev);
+	log_flag(GRES, "%s : %s major %d, minor %d", __func__, dev->path,
+		 dev->dev_desc.major, dev->dev_desc.minor);
+
+	if (S_ISBLK(fs.st_mode))
+		dev->dev_desc.type = DEV_TYPE_BLOCK;
+	else if (S_ISCHR(fs.st_mode))
+		dev->dev_desc.type = DEV_TYPE_CHAR;
+	else {
+		error("%s is not a valid character or block device, fix your gres.conf",
+		      dev->path);
+		return SLURM_ERROR;
+	}
+
+	return SLURM_SUCCESS;
+}
+
 static gres_device_t *_init_gres_device(int index, char *one_name,
 					char *unique_id)
 {
 	int tmp, digit = -1;
-
 	gres_device_t *gres_device = xmalloc(sizeof(gres_device_t));
+
 	gres_device->dev_num = -1;
 	gres_device->index = index;
 	gres_device->path = xstrdup(one_name);
-
-	gres_device->major = gres_device_major(gres_device->path);
 	gres_device->unique_id = xstrdup(unique_id);
+
+	if (_set_gres_device_desc(gres_device) != SLURM_SUCCESS) {
+		xfree(gres_device);
+		return NULL;
+	}
+
 	tmp = strlen(one_name);
 	for (int i = 1;  i <= tmp; i++) {
 		if (isdigit(one_name[tmp - i])) {
@@ -138,9 +184,10 @@ extern int common_node_config_load(List gres_conf_list, char *gres_name,
 						destroy_gres_device);
 				}
 
-				gres_device = _init_gres_device(
-					index, one_name,
-					gres_slurmd_conf->unique_id);
+				if (!(gres_device = _init_gres_device(
+					      index, one_name,
+					      gres_slurmd_conf->unique_id)))
+					continue;
 
 				if (gres_device->dev_num > max_dev_num)
 					max_dev_num = gres_device->dev_num;
@@ -177,13 +224,17 @@ extern int common_node_config_load(List gres_conf_list, char *gres_name,
 
 	if (*gres_devices) {
 		gres_device_t *gres_device;
+		char *dev_id_str;
 		itr = list_iterator_create(*gres_devices);
 		while ((gres_device = list_next(itr))) {
+			dev_id_str = gres_device_id2str(&gres_device->dev_desc);
 			if (gres_device->dev_num == -1)
 				gres_device->dev_num = ++max_dev_num;
 			log_flag(GRES, "%s device number %d(%s):%s",
 				 gres_name, gres_device->dev_num,
-				 gres_device->path, gres_device->major);
+				 gres_device->path,
+				 dev_id_str);
+			xfree(dev_id_str);
 		}
 		list_iterator_destroy(itr);
 	}
@@ -345,7 +396,9 @@ extern void common_send_stepd(buf_t *buffer, List gres_devices)
 		/* DON'T PACK gres_device->alloc */
 		pack32(gres_device->index, buffer);
 		pack32(gres_device->dev_num, buffer);
-		packstr(gres_device->major, buffer);
+		pack32(gres_device->dev_desc.type, buffer);
+		pack32(gres_device->dev_desc.major, buffer);
+		pack32(gres_device->dev_desc.minor, buffer);
 		packstr(gres_device->path, buffer);
 		packstr(gres_device->unique_id, buffer);
 	}
@@ -379,8 +432,12 @@ extern void common_recv_stepd(buf_t *buffer, List *gres_devices)
 		gres_device->index = uint32_tmp;
 		safe_unpack32(&uint32_tmp, buffer);
 		gres_device->dev_num = uint32_tmp;
-		safe_unpackstr_xmalloc(&gres_device->major,
-				       &uint32_tmp, buffer);
+		safe_unpack32(&uint32_tmp, buffer);
+		gres_device->dev_desc.type = uint32_tmp;
+		safe_unpack32(&uint32_tmp, buffer);
+		gres_device->dev_desc.major = uint32_tmp;
+		safe_unpack32(&uint32_tmp, buffer);
+		gres_device->dev_desc.minor = uint32_tmp;
 		safe_unpackstr_xmalloc(&gres_device->path,
 				       &uint32_tmp, buffer);
 		safe_unpackstr_xmalloc(&gres_device->unique_id,
@@ -499,6 +556,9 @@ extern void gres_common_gpu_set_env(char ***env_ptr, bitstr_t *gres_bit_alloc,
 		else if (gres_conf_flags & GRES_CONF_ENV_RSMI)
 			local_list = xstrdup(getenvp(*env_ptr,
 						     "ROCR_VISIBLE_DEVICES"));
+		else if (gres_conf_flags & GRES_CONF_ENV_ONEAPI)
+			local_list = xstrdup(getenvp(*env_ptr,
+						     "ZE_AFFINITY_MASK"));
 		else if (gres_conf_flags & GRES_CONF_ENV_OPENCL)
 			local_list = xstrdup(getenvp(*env_ptr,
 						     "GPU_DEVICE_ORDINAL"));
@@ -540,6 +600,9 @@ extern void gres_common_gpu_set_env(char ***env_ptr, bitstr_t *gres_bit_alloc,
 		if (gres_conf_flags & GRES_CONF_ENV_RSMI)
 			env_array_overwrite(env_ptr, "ROCR_VISIBLE_DEVICES",
 					    local_list);
+		if (gres_conf_flags & GRES_CONF_ENV_ONEAPI)
+			env_array_overwrite(env_ptr, "ZE_AFFINITY_MASK",
+					    local_list);
 		if (gres_conf_flags & GRES_CONF_ENV_OPENCL)
 			env_array_overwrite(env_ptr, "GPU_DEVICE_ORDINAL",
 					    local_list);
@@ -550,6 +613,8 @@ extern void gres_common_gpu_set_env(char ***env_ptr, bitstr_t *gres_bit_alloc,
 			unsetenvp(*env_ptr, "CUDA_VISIBLE_DEVICES");
 		if (gres_conf_flags & GRES_CONF_ENV_RSMI)
 			unsetenvp(*env_ptr, "ROCR_VISIBLE_DEVICES");
+		if (gres_conf_flags & GRES_CONF_ENV_ONEAPI)
+			unsetenvp(*env_ptr, "ZE_AFFINITY_MASK");
 		if (gres_conf_flags & GRES_CONF_ENV_OPENCL)
 			unsetenvp(*env_ptr, "GPU_DEVICE_ORDINAL");
 	}
@@ -562,7 +627,6 @@ extern void gres_common_gpu_set_env(char ***env_ptr, bitstr_t *gres_bit_alloc,
  * RETURN: 1 if nothing was done, 0 otherwise.
  */
 extern bool gres_common_epilog_set_env(char ***epilog_env_ptr,
-				       int *env_inx,
 				       gres_epilog_info_t *gres_ei,
 				       int node_inx, uint32_t gres_conf_flags,
 				       List gres_devices)
@@ -574,9 +638,6 @@ extern bool gres_common_epilog_set_env(char ***epilog_env_ptr,
 	char *sep = "";
 
 	xassert(epilog_env_ptr);
-	xassert(env_inx);
-
-	*env_inx = 0;
 
 	if (!gres_ei)
 		return 1;
@@ -591,14 +652,6 @@ extern bool gres_common_epilog_set_env(char ***epilog_env_ptr,
 		error("bad node index (%d > %u)",
 		      node_inx, gres_ei->node_cnt);
 		return 1;
-	}
-
-	if (*epilog_env_ptr) {
-		while ((*epilog_env_ptr)[*env_inx])
-			(*env_inx)++;
-		xrecalloc(*epilog_env_ptr, (*env_inx) + 5, sizeof(char *));
-	} else {
-		*epilog_env_ptr = xcalloc(5, sizeof(char *));
 	}
 
 	if (gres_ei->gres_bit_alloc &&
@@ -627,19 +680,26 @@ extern bool gres_common_epilog_set_env(char ***epilog_env_ptr,
 	}
 	if (vendor_gpu_str) {
 		if (gres_conf_flags & GRES_CONF_ENV_NVML)
-			xstrfmtcat((*epilog_env_ptr)[(*env_inx)++],
-				   "CUDA_VISIBLE_DEVICES=%s", vendor_gpu_str);
+			env_array_overwrite(epilog_env_ptr,
+					    "CUDA_VISIBLE_DEVICES",
+					    vendor_gpu_str);
 		if (gres_conf_flags & GRES_CONF_ENV_RSMI)
-			xstrfmtcat((*epilog_env_ptr)[(*env_inx)++],
-				   "ROCR_VISIBLE_DEVICES=%s", vendor_gpu_str);
+			env_array_overwrite(epilog_env_ptr,
+					    "ROCR_VISIBLE_DEVICES",
+					    vendor_gpu_str);
+		if (gres_conf_flags & GRES_CONF_ENV_ONEAPI)
+			env_array_overwrite(epilog_env_ptr,
+					    "ZE_AFFINITY_MASK",
+					    vendor_gpu_str);
 		if (gres_conf_flags & GRES_CONF_ENV_OPENCL)
-			xstrfmtcat((*epilog_env_ptr)[(*env_inx)++],
-				   "GPU_DEVICE_ORDINAL=%s", vendor_gpu_str);
+			env_array_overwrite(epilog_env_ptr,
+					    "GPU_DEVICE_ORDINAL",
+					    vendor_gpu_str);
 		xfree(vendor_gpu_str);
 	}
 	if (slurm_gpu_str) {
-		xstrfmtcat((*epilog_env_ptr)[(*env_inx)++], "SLURM_JOB_GPUS=%s",
-			   slurm_gpu_str);
+		env_array_overwrite(epilog_env_ptr, "SLURM_JOB_GPUS",
+				    slurm_gpu_str);
 		xfree(slurm_gpu_str);
 	}
 
@@ -657,6 +717,8 @@ extern int gres_common_set_env_types_on_node_flags(void *x, void *arg)
 		*node_flags |= GRES_CONF_ENV_RSMI;
 	if (gres_slurmd_conf->config_flags & GRES_CONF_ENV_OPENCL)
 		*node_flags |= GRES_CONF_ENV_OPENCL;
+	if (gres_slurmd_conf->config_flags & GRES_CONF_ENV_ONEAPI)
+		*node_flags |= GRES_CONF_ENV_ONEAPI;
 
 	/* No need to continue if all are set */
 	if ((*node_flags & GRES_CONF_ENV_SET) == GRES_CONF_ENV_SET)

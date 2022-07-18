@@ -1,4 +1,3 @@
-// main control daemon for master node
 /*****************************************************************************\
  *  controller.c - main control machine daemon for slurm
  *****************************************************************************
@@ -81,6 +80,7 @@
 #include "src/common/slurm_jobacct_gather.h"
 #include "src/common/slurm_jobcomp.h"
 #include "src/common/slurm_mcs.h"
+#include "src/common/slurm_mpi.h"
 #include "src/common/slurm_priority.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_protocol_interface.h"
@@ -162,12 +162,6 @@
 \**************************************************************************/
 
 /* Log to stderr and syslog until becomes a daemon */
-/* #define LOG_OPTS_INITIALIZER	\
-	{ LOG_LEVEL_INFO, LOG_LEVEL_INFO, LOG_LEVEL_INFO, 1, 0 , 0}
-
-	#define SCHEDLOG_OPTS_INITIALIZER	\
-	{ LOG_LEVEL_QUIET, LOG_LEVEL_QUIET, LOG_LEVEL_QUIET, 0, 1, 0}
-*/
 log_options_t log_opts = LOG_OPTS_INITIALIZER;
 /* Scheduler Log options */
 log_options_t sched_log_opts = SCHEDLOG_OPTS_INITIALIZER;
@@ -275,18 +269,12 @@ static void *       _wait_primary_prog(void *arg);
 int main(int argc, char **argv)
 {
 	int cnt, error_code, i;
-	// time second and microseconds
 	struct timeval start, now;
 	struct stat stat_buf;
-	// resource limit
 	struct rlimit rlim;
-
 	/* Locks: Write configuration, job, node, and partition */
-	// in locks.h, three locks type no_lock, read_lock, write lock
 	slurmctld_lock_t config_write_lock = {
 		WRITE_LOCK, WRITE_LOCK, WRITE_LOCK, WRITE_LOCK, NO_LOCK };
-
-	// what is this????
 	prep_callbacks_t prep_callbacks = {
 		.prolog_slurmctld = prep_prolog_slurmctld_callback,
 		.epilog_slurmctld = prep_epilog_slurmctld_callback,
@@ -298,29 +286,20 @@ int main(int argc, char **argv)
 	 * Make sure we have no extra open files which
 	 * would be propagated to spawned tasks.
 	 */
-	// close open file, confused why 3
 	closeall(3);
 
 	/*
 	 * Establish initial configuration
 	 */
-	// set all resource to hard limit
-	// set slurmctld glodal variable data, initialize common slurmctld configuration
 	_init_config();
-	// parse command line
 	_parse_commandline(argc, argv);
-
-	// a log and a scheduler log
-	// so slurmctld has two logs, one for scheduling?
 	log_init(argv[0], log_opts, LOG_DAEMON, NULL);
 	sched_log_init(argv[0], sched_log_opts, LOG_DAEMON, NULL);
-
 	/*
 	 * Must pass in an explicit filename to slurm_conf_init() to avoid
 	 * the "configless" mode of operation kicking in if no file is
 	 * currently available.
 	 */
-	/* set slurm conf file*/
 	if (!(conf_file = slurm_conf_filename))
 		if (!(conf_file = getenv("SLURM_CONF")))
 			conf_file = default_slurm_config_file;
@@ -330,9 +309,7 @@ int main(int argc, char **argv)
 	update_logging();
 	unlock_slurmctld(config_write_lock);
 
-	// set job scheduling statistics to 0
 	memset(&slurmctld_diag_stats, 0, sizeof(slurmctld_diag_stats));
-
 	/*
 	 * Calculate speed of gettimeofday() for sdiag.
 	 * Large delays indicate the Linux vDSO is not in use, which
@@ -359,13 +336,10 @@ int main(int argc, char **argv)
 	 */
 	create_clustername_file = _verify_clustername();
 
-	/* Nice value — Nice values are user-space values that we can use to control the priority of a process. 
-	The nice value range is -20 to +19 where -20 is highest, 0 default and +19 is lowest. */
 	_update_nice();
 	if (!test_config)
 		_kill_old_slurmctld();
 
-	// ? 
 	for (i = 0; i < 3; i++)
 		fd_set_close_on_exec(i);
 
@@ -572,7 +546,6 @@ int main(int argc, char **argv)
 			fatal("failed to initialize jobacct_gather plugin");
 		}
 	}
-	// job submitting plugin
 	if (job_submit_plugin_init() != SLURM_SUCCESS) {
 		if (test_config) {
 			error("failed to initialize job_submit plugin");
@@ -605,9 +578,15 @@ int main(int argc, char **argv)
 			fatal("failed to initialize node_features plugin");
 		}
 	}
+	if (mpi_g_daemon_init() != SLURM_SUCCESS) {
+		if (test_config) {
+			error("Failed to initialize MPI plugins.");
+			test_config_rc = 1;
+		} else
+			fatal("Failed to initialize MPI plugins.");
+	}
 	agent_init();
 
-	// keep running
 	while (1) {
 		/* initialization for each primary<->backup switch */
 		slurmctld_config.shutdown_time = (time_t) 0;
@@ -674,10 +653,28 @@ int main(int argc, char **argv)
 				exit(test_config_rc);
 			}
 
+                        printf("after if statement\n");
 			if ((error_code = read_slurm_conf(recover, false))) {
+				printf("in the if statement\n\n");
 				fatal("read_slurm_conf reading %s: %s",
 				      slurm_conf.slurm_conf,
 				      slurm_strerror(error_code));
+			}
+			printf("here\n\n");
+			/*
+			 * configless_setup() is called only after slurm.conf
+			 * has been parsed, and thus only the slurm.conf Include
+			 * files have been identified. Call configless_update()
+			 * now to setup configless with the included files from
+			 * other conf files.
+			 */
+			configless_update();
+			if (conf_includes_list) {
+				/*
+				 * clear included files so that subsequent conf
+				 * parsings refill it with updated information.
+				 */
+				list_flush(conf_includes_list);
 			}
 			unlock_slurmctld(config_write_lock);
 			select_g_select_nodeinfo_set_all();
@@ -687,7 +684,6 @@ int main(int argc, char **argv)
 				_accounting_mark_all_nodes_down("cold-start");
 			}
 		}
-
 		if (!acct_db_conn) {
 			acct_db_conn = acct_storage_g_get_connection(
 				0, NULL, false, slurm_conf.cluster_name);
@@ -728,8 +724,7 @@ int main(int argc, char **argv)
 		fed_mgr_init(acct_db_conn);
 
 		_restore_job_dependencies();
-      
-		// set priority plugin
+
 		if (priority_g_init() != SLURM_SUCCESS)
 			fatal("failed to initialize priority plugin");
 		if (slurmctld_plugstack_init())
@@ -772,8 +767,8 @@ int main(int argc, char **argv)
 		 */
 		slurm_thread_create(&slurmctld_config.thread_id_purge_files,
 				    _purge_files_thread, NULL);
-
-		// set scheduling policy here
+                
+		//printf("sadfahere\n");
 		if (sched_g_init() != SLURM_SUCCESS)
 			fatal("failed to initialize scheduling plugin");
 		/*
@@ -896,6 +891,7 @@ int main(int argc, char **argv)
 	job_fini();
 	part_fini();	/* part_fini() must precede node_fini() */
 	node_fini();
+	mpi_fini();
 	node_features_g_fini();
 	purge_front_end_state();
 	resv_fini();
@@ -980,9 +976,9 @@ static void _send_future_cloud_to_db()
 	slurmdb_event_rec_t *event = NULL;
 	List event_list = NULL;
 	bool check_db = !running_cache;
+	node_record_t *node_ptr;
 
-	for (int i = 0; i < node_record_count; i++) {
-		node_record_t *node_ptr = node_record_table_ptr + i;
+	for (int i = 0; (node_ptr = next_node(&i)); i++) {
 		if (!IS_NODE_FUTURE(node_ptr) &&
 		    !(IS_NODE_CLOUD(node_ptr) &&
 		      IS_NODE_POWERED_DOWN(node_ptr)))
@@ -1046,13 +1042,11 @@ static void  _init_config(void)
 {
 	struct rlimit rlim;
 
-	// set max no file
 	rlimits_use_max_nofile();
 	if (getrlimit(RLIMIT_CORE, &rlim) == 0) {
 		rlim.rlim_cur = rlim.rlim_max;
 		(void) setrlimit(RLIMIT_CORE, &rlim);
 	}
-	// set size of process stack
 	if (getrlimit(RLIMIT_STACK, &rlim) == 0) {
 		/* slurmctld can spawn lots of pthreads.
 		 * Set the (per thread) stack size to a
@@ -1066,10 +1060,8 @@ static void  _init_config(void)
 		(void) setrlimit(RLIMIT_DATA, &rlim);
 	}
 
-	// set &slurmctld_config with 0 with size of slurmctld_config_t
 	memset(&slurmctld_config, 0, sizeof(slurmctld_config_t));
 	slurm_cond_init(&slurmctld_config.backup_finish_cond, NULL);
-	// set global variable slurmctld with some values
 	slurmctld_config.boot_time      = time(NULL);
 	slurmctld_config.daemonize      = DEFAULT_DAEMONIZE;
 	slurmctld_config.resume_backup  = false;
@@ -1114,6 +1106,12 @@ static void _reconfigure_slurm(void)
 	else {
 		_update_cred_key();
 		set_slurmctld_state_loc();
+		if (config_for_slurmd) {
+			configless_update();
+			push_reconfig_to_slurmd(slurmd_config_files);
+		} else
+			msg_to_slurmd(REQUEST_RECONFIGURE);
+		node_features_updated = true;
 	}
 
 	gs_reconfig();
@@ -1122,10 +1120,24 @@ static void _reconfigure_slurm(void)
 	assoc_mgr_set_missing_uids();
 	slurmscriptd_reconfig();
 	start_power_mgr(&slurmctld_config.thread_id_power);
+	if (mpi_g_daemon_reconfig() != SLURM_SUCCESS) {
+		if (test_config) {
+			error("Failed to reconfigure MPI plugins.");
+			test_config_rc = 1;
+		} else
+			fatal("Failed to reconfigure MPI plugins.");
+	}
 	trigger_reconfig();
 	priority_g_reconfig(true);	/* notify priority plugin too */
 	save_all_state();		/* Has own locking */
 	queue_job_scheduler();
+	if (conf_includes_list) {
+		/*
+		 * clear included files so that subsequent conf
+		 * parsings refill it with updated information.
+		 */
+		list_flush(conf_includes_list);
+	}
 }
 
 /* Request that the job scheduler execute soon (typically within seconds) */
@@ -1256,7 +1268,6 @@ static void *_slurmctld_rpc_mgr(void *no_data)
 			fatal("slurm_init_msg_engine_port error %m");
 			return NULL;	/* Fix CLANG false positive */
 		}
-		fd_set_close_on_exec(fds[i].fd);
 		if (slurm_get_stream_addr(fds[i].fd, &srv_addr)) {
 			error("slurm_get_stream_addr error %m");
 		} else {
@@ -1306,7 +1317,6 @@ static void *_slurmctld_rpc_mgr(void *no_data)
 			xfree(newsockfd);
 			continue;
 		}
-		fd_set_close_on_exec(*newsockfd);
 
 		log_flag(PROTOCOL, "%s: accept() connection from %pA",
 			 __func__, &cli_addr);
@@ -1447,57 +1457,11 @@ extern void server_thread_incr(void)
 
 static int _accounting_cluster_ready(void)
 {
-	int rc = SLURM_ERROR;
-	time_t event_time = time(NULL);
-	bitstr_t *total_node_bitmap = NULL;
-	char *cluster_nodes = NULL, *cluster_tres_str;
-	slurmctld_lock_t node_write_lock = {
-		NO_LOCK, NO_LOCK, WRITE_LOCK, WRITE_LOCK, NO_LOCK };
-	assoc_mgr_lock_t locks = { .tres = WRITE_LOCK };
-
-	lock_slurmctld(node_write_lock);
-	/* Now get the names of all the nodes on the cluster at this
-	   time and send it also.
-	*/
-	total_node_bitmap = bit_alloc(node_record_count);
-	bit_nset(total_node_bitmap, 0, node_record_count-1);
-	cluster_nodes = bitmap2node_name_sortable(total_node_bitmap, 0);
-	FREE_NULL_BITMAP(total_node_bitmap);
-
-	assoc_mgr_lock(&locks);
-
-	cluster_tres_str = slurmdb_make_tres_string(
-		assoc_mgr_tres_list, TRES_STR_FLAG_SIMPLE);
-	assoc_mgr_unlock(&locks);
-
-	unlock_slurmctld(node_write_lock);
-
-	rc = clusteracct_storage_g_cluster_tres(acct_db_conn,
-						cluster_nodes,
-						cluster_tres_str, event_time,
-						SLURM_PROTOCOL_VERSION);
-
-	xfree(cluster_nodes);
-	xfree(cluster_tres_str);
-
-	/*
-	 * FIXME: We should do things differently here depending on the return
-	 *        value.  If NODES_CHANGE or FIRST_REQ we probably want to send
-	 *        most everything to accounting, but if just the TRES changed it
-	 *        means the nodes didn't change and we might not need to send
-	 *        anything.
-	 */
-	if ((rc == ACCOUNTING_FIRST_REG) ||
-	    (rc == ACCOUNTING_NODES_CHANGE_DB) ||
-	    (rc == ACCOUNTING_TRES_CHANGE_DB)) {
-		/* see if we are running directly to a database
-		 * instead of a slurmdbd.
-		 */
-		send_all_to_accounting(event_time, rc);
-		rc = SLURM_SUCCESS;
-	}
-
-	return rc;
+	return clusteracct_storage_g_cluster_tres(acct_db_conn,
+						  NULL,
+						  NULL,
+						  0,
+						  SLURM_PROTOCOL_VERSION);
 }
 
 static int _accounting_mark_all_nodes_down(char *reason)
@@ -1525,8 +1489,7 @@ static int _accounting_mark_all_nodes_down(char *reason)
 	   == SLURM_ERROR)
 		return rc;
 
-	node_ptr = node_record_table_ptr;
-	for (i = 0; i < node_record_count; i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		if (!node_ptr->name)
 			continue;
 		if ((rc = clusteracct_storage_g_node_down(
@@ -1869,8 +1832,7 @@ static void _queue_reboot_msg(void)
 	bool want_reboot;
 
 	want_nodes_reboot = false;
-	for (i = 0, node_ptr = node_record_table_ptr;
-	     i < node_record_count; i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		/* Allow nodes in maintenance reservations to reboot
 		 * (they previously could not).
 		 */
@@ -1930,14 +1892,12 @@ static void _queue_reboot_msg(void)
 		node_ptr->node_state &= ~NODE_STATE_REBOOT_REQUESTED;
 		node_ptr->node_state |= NODE_STATE_REBOOT_ISSUED;
 
-		bit_clear(avail_node_bitmap, i);
-		bit_clear(idle_node_bitmap, i);
+		bit_clear(avail_node_bitmap, node_ptr->index);
+		bit_clear(idle_node_bitmap, node_ptr->index);
 
 		node_ptr->boot_req_time = now;
 
-		if (node_ptr->reason &&
-		    !xstrstr(node_ptr->reason, "reboot issued"))
-			xstrcat(node_ptr->reason, " : reboot issued");
+		set_node_reboot_reason(node_ptr, "reboot issued");
 
 		clusteracct_storage_g_node_down(acct_db_conn, node_ptr, now,
 		                                NULL, slurm_conf.slurm_user_id);
@@ -1948,6 +1908,7 @@ static void _queue_reboot_msg(void)
 				reboot_agent_args->hostlist);
 		debug("Issuing reboot request for nodes %s", host_str);
 		xfree(host_str);
+		set_agent_arg_r_uid(reboot_agent_args, SLURM_AUTH_UID_ANY);
 		agent_queue_request(reboot_agent_args);
 		last_node_update = now;
 		schedule_node_save();
@@ -2211,7 +2172,7 @@ static void *_slurmctld_background(void *no_data)
 		}
 
 		/* Process any pending agent work */
-		agent_trigger(RPC_RETRY_INTERVAL, true);
+		agent_trigger(RPC_RETRY_INTERVAL, true, true);
 
 		if (slurm_conf.group_time &&
 		    (difftime(now, last_group_time)
@@ -2459,29 +2420,6 @@ extern void ctld_assoc_mgr_init(void)
 
 }
 
-/* send all info for the controller to accounting */
-extern void send_all_to_accounting(time_t event_time, int db_rc)
-{
-	/* ignore the rcs here because if there was an error we will
-	   push the requests on the queue and process them when the
-	   database server comes back up.
-	*/
-	debug2("send_all_to_accounting: called %s", rpc_num2string(db_rc));
-	switch (db_rc) {
-	case ACCOUNTING_FIRST_REG:
-	case ACCOUNTING_NODES_CHANGE_DB:
-		send_jobs_to_accounting();
-		send_resvs_to_accounting(db_rc);
-		/* fall through */
-	case ACCOUNTING_TRES_CHANGE_DB:
-		/* No need to do jobs or resvs when only the TRES change. */
-		send_nodes_to_accounting(event_time);
-		break;
-	default:
-		error("unknown rc of %d given", db_rc);
-	}
-}
-
 static int _add_node_gres_tres(void *x, void *arg)
 {
 	uint64_t gres_cnt;
@@ -2549,6 +2487,7 @@ extern void set_cluster_tres(bool assoc_mgr_locked)
 	uint64_t cluster_billing = 0;
 	char *unique_tres = NULL;
 	assoc_mgr_lock_t locks = { .tres = WRITE_LOCK };
+	int active_node_count = 0;
 
 	xassert(verify_lock(NODE_LOCK, WRITE_LOCK));
 	xassert(verify_lock(PART_LOCK, WRITE_LOCK));
@@ -2610,12 +2549,12 @@ extern void set_cluster_tres(bool assoc_mgr_locked)
 
 	cluster_cpus = 0;
 
-	node_ptr = node_record_table_ptr;
-	for (i = 0; i < node_record_count; i++, node_ptr++) {
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		uint64_t cpu_count = 0, mem_count = 0;
 		if (!node_ptr->name)
 			continue;
 
+		active_node_count++;
 		cpu_count = node_ptr->cpus_efctv;
 		mem_count = node_ptr->config_ptr->real_memory;
 
@@ -2654,7 +2593,7 @@ extern void set_cluster_tres(bool assoc_mgr_locked)
 	if (cpu_tres)
 		cpu_tres->count = cluster_cpus;
 
-	assoc_mgr_tres_array[TRES_ARRAY_NODE]->count = node_record_count;
+	assoc_mgr_tres_array[TRES_ARRAY_NODE]->count = active_node_count;
 	assoc_mgr_tres_array[TRES_ARRAY_BILLING]->count = cluster_billing;
 
 	set_partition_tres();
@@ -2809,6 +2748,7 @@ static void *_shutdown_bu_thread(void *arg)
 	xfree(arg);
 
 	slurm_msg_t_init(&req);
+	slurm_msg_set_r_uid(&req, slurm_conf.slurm_user_id);
 	slurm_set_addr(&req.address, slurm_conf.slurmctld_port,
 	               slurm_conf.control_addr[bu_inx]);
 	if (do_shutdown) {
@@ -3024,18 +2964,18 @@ void update_logging(void)
 		rc = chown(slurm_conf.slurmctld_logfile,
 			   slurm_user_id, slurm_user_gid);
 		if (rc && daemonize) {
-			error("chown(%s, %d, %d): %m",
+			error("chown(%s, %u, %u): %m",
 			      slurm_conf.slurmctld_logfile,
-			      (int) slurm_user_id, (int) slurm_user_gid);
+			      slurm_user_id, slurm_user_gid);
 		}
 	}
 	if (slurm_conf.sched_logfile) {
 		rc = chown(slurm_conf.sched_logfile,
 			   slurm_user_id, slurm_user_gid);
 		if (rc && daemonize) {
-			error("chown(%s, %d, %d): %m",
+			error("chown(%s, %u, %u): %m",
 			      slurm_conf.sched_logfile,
-			      (int) slurm_user_id, (int) slurm_user_gid);
+			      slurm_user_id, slurm_user_gid);
 		}
 	}
 }
@@ -3388,7 +3328,7 @@ static void _become_slurm_user(void)
 	/* Set GID to GID of SlurmUser */
 	if ((slurm_user_gid != getegid()) &&
 	    (setgid(slurm_user_gid))) {
-		fatal("Failed to set GID to %d", slurm_user_gid);
+		fatal("Failed to set GID to %u", slurm_user_gid);
 	}
 
 	/* Set UID to UID of SlurmUser */

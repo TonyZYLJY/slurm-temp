@@ -579,10 +579,22 @@ extern int acct_storage_g_shutdown(void *db_conn);
 
 /*********************** CLUSTER ACCOUNTING STORAGE **************************/
 
+/*
+ * Send all relavant information to the DBD.
+ * RET: SLURM_SUCCESS on success SLURM_ERROR else
+ */
+extern void acct_storage_g_send_all(void *db_conn, time_t event_time,
+				    slurm_msg_type_t msg_type);
+
 extern int clusteracct_storage_g_node_down(void *db_conn,
 					   node_record_t *node_ptr,
 					   time_t event_time,
 					   char *reason, uint32_t reason_uid);
+
+/*
+ * See slurmdbd acct_storage_p_node_inx().
+ */
+extern char *acct_storage_g_node_inx(void *db_conn, char *nodes);
 
 extern int clusteracct_storage_g_node_up(void *db_conn, node_record_t *node_ptr,
 					 time_t event_time);

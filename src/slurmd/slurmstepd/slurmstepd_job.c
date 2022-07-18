@@ -243,35 +243,29 @@ static void _task_info_array_destroy(stepd_step_rec_t *job)
 
 static void _slurm_cred_to_step_rec(slurm_cred_t *cred, stepd_step_rec_t *job)
 {
-	slurm_cred_arg_t cred_arg;
-	slurm_cred_get_args(cred, &cred_arg);
+	slurm_cred_arg_t *cred_arg = slurm_cred_get_args(cred);
 
 	/*
 	 * This may have been filed in already from batch_job_launch_msg_t
 	 * or launch_tasks_request_msg_t.
 	 */
-	if (!job->user_name) {
-		job->user_name = cred_arg.pw_name;
-		cred_arg.pw_name = NULL;
-	}
+	if (!job->user_name)
+		job->user_name = xstrdup(cred_arg->pw_name);
 
-	job->pw_gecos = cred_arg.pw_gecos;
-	cred_arg.pw_gecos = NULL;
-	job->pw_dir = cred_arg.pw_dir;
-	cred_arg.pw_dir = NULL;
-	job->pw_shell = cred_arg.pw_shell;
-	cred_arg.pw_shell = NULL;
+	job->pw_gecos = xstrdup(cred_arg->pw_gecos);
+	job->pw_dir = xstrdup(cred_arg->pw_dir);
+	job->pw_shell = xstrdup(cred_arg->pw_shell);
 
-	job->ngids = cred_arg.ngids;
-	job->gids = cred_arg.gids;
-	cred_arg.gids = NULL;
-	job->gr_names = cred_arg.gr_names;
-	cred_arg.gr_names = NULL;
+	job->ngids = cred_arg->ngids;
+	job->gids = cred_arg->gids;
+	cred_arg->gids = copy_gids(cred_arg->ngids, cred_arg->gids);
+	job->gr_names = copy_gr_names(cred_arg->ngids, cred_arg->gr_names);
 
-	job->selinux_context = cred_arg.selinux_context;
-	cred_arg.selinux_context = NULL;
+	job->selinux_context = xstrdup(cred_arg->selinux_context);
 
-	slurm_cred_free_args(&cred_arg);
+	job->alias_list = xstrdup(cred_arg->job_alias_list);
+
+	slurm_cred_unlock_args(cred);
 }
 
 /* create a slurmd job structure from a launch tasks message */
@@ -447,7 +441,7 @@ extern stepd_step_rec_t *stepd_step_rec_create(launch_tasks_request_msg_t *msg,
 		memset(&io_addr, 0, sizeof(slurm_addr_t));
 	}
 
-	srun = srun_info_create(msg->cred, &resp_addr, &io_addr,
+	srun = srun_info_create(msg->cred, &resp_addr, &io_addr, job->uid,
 				protocol_version);
 
 	job->profile     = msg->profile;
@@ -614,7 +608,7 @@ batch_stepd_step_rec_create(batch_job_launch_msg_t *msg)
 	get_cred_gres(msg->cred, conf->node_name,
 		      &job->job_gres_list, &job->step_gres_list);
 
-	srun = srun_info_create(NULL, NULL, NULL, NO_VAL16);
+	srun = srun_info_create(NULL, NULL, NULL, job->uid, NO_VAL16);
 
 	list_append(job->sruns, (void *) srun);
 
@@ -671,6 +665,7 @@ stepd_step_rec_destroy(stepd_step_rec_t *job)
 	FREE_NULL_LIST(job->outgoing_cache);
 	FREE_NULL_LIST(job->job_gres_list);
 	FREE_NULL_LIST(job->step_gres_list);
+	xfree(job->alias_list);
 	xfree(job->container);
 	xfree(job->cpu_bind);
 	xfree(job->cwd);
@@ -705,9 +700,10 @@ stepd_step_rec_destroy(stepd_step_rec_t *job)
 	xfree(job);
 }
 
-extern srun_info_t *
-srun_info_create(slurm_cred_t *cred, slurm_addr_t *resp_addr,
-		 slurm_addr_t *ioaddr, uint16_t protocol_version)
+extern srun_info_t *srun_info_create(slurm_cred_t *cred,
+				     slurm_addr_t *resp_addr,
+				     slurm_addr_t *ioaddr, uid_t uid,
+				     uint16_t protocol_version)
 {
 	char             *data = NULL;
 	uint32_t          len  = 0;
@@ -718,6 +714,7 @@ srun_info_create(slurm_cred_t *cred, slurm_addr_t *resp_addr,
 	if (!protocol_version || (protocol_version == NO_VAL16))
 		protocol_version = SLURM_PROTOCOL_VERSION;
 	srun->protocol_version = protocol_version;
+	srun->uid = uid;
 	/*
 	 * If no credential was provided, return the empty
 	 * srun info object. (This is used, for example, when

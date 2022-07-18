@@ -111,6 +111,8 @@ static int _dump_clusters(data_t *resp, data_t *errors, char *cluster,
 		rc = ESLURM_DATA_CONV_FAILED;
 
 	FREE_NULL_LIST(cluster_list);
+	FREE_NULL_LIST(cluster_cond.cluster_list);
+	FREE_NULL_LIST(args.tres_list);
 
 	return rc;
 }
@@ -193,6 +195,8 @@ static data_for_each_cmd_t _foreach_update_cluster(data_t *data, void *arg)
 	}
 
 	cluster = xmalloc(sizeof(slurmdb_cluster_rec_t));
+	slurmdb_init_cluster_rec(cluster, false);
+
 	cluster->accounting_list = list_create(
 		slurmdb_destroy_cluster_accounting_rec);
 	(void)list_append(args->cluster_list, cluster);
@@ -229,6 +233,7 @@ static int _update_clusters(data_t *query, data_t *resp, data_t *errors,
 		db_query_commit(errors, auth);
 
 	FREE_NULL_LIST(args.cluster_list);
+	FREE_NULL_LIST(args.tres_list);
 
 	return rc;
 }

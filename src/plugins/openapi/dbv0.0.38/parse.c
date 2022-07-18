@@ -162,7 +162,7 @@ typedef struct {
  * field_offset since the array actually has all of the flag offsets in the
  * struct
  */
-#define add_parser_flags(flags_array, stype, req, field, path)                \
+#define add_parser_flags(flags_array, req, path)                              \
 	{                                                                     \
 		.field_offset = (uintptr_t)flags_array,                       \
 		.key = path,                                                  \
@@ -222,8 +222,7 @@ static const parser_t parse_assoc[] = {
 	/* skipping bf_usage (not packed) */
 	_add_parse(STRING, cluster, "cluster"),
 	_add_parse(QOS_ID, def_qos_id, "default/qos"),
-	add_parser_flags(parser_assoc_flags, slurmdb_assoc_rec_t, false, flags,
-			 "flags"),
+	add_parser_flags(parser_assoc_flags, false, "flags"),
 	/* skip lft */
 	_add_parse(UINT32, grp_jobs, "max/jobs/per/count"),
 	_add_parse(UINT32, grp_jobs_accrue, "max/jobs/per/accruing"),
@@ -272,6 +271,14 @@ static const parser_t parse_assoc[] = {
 	add_parser(slurmdb_user_rec_t, mtype, false, field, path)
 #define _add_parse_req(mtype, field, path) \
 	add_parser(slurmdb_user_rec_t, mtype, true, field, path)
+
+#define _add_flag(flagn, flagv) \
+	add_parser_enum_flag(slurmdb_user_rec_t, flags, flagn, flagv)
+static const parser_enum_t parser_user_flags[] = {
+	_add_flag(SLURMDB_USER_FLAG_DELETED, "DELETED"),
+};
+#undef _add_flag
+
 /* should mirror the structure of slurmdb_user_rec */
 static const parser_t parse_user[] = {
 	_add_parse(ADMIN_LVL, admin_level, "administrator_level"),
@@ -279,6 +286,7 @@ static const parser_t parse_user[] = {
 	_add_parse(COORD_LIST, coord_accts, "coordinators"),
 	_add_parse(STRING, default_acct, "default/account"),
 	_add_parse(STRING, default_wckey, "default/wckey"),
+	add_parser_flags(parser_user_flags, false, "flags"),
 	_add_parse_req(STRING, name, "name"),
 	/* skipping old_name */
 	/* skipping uid (should always be 0) */
@@ -313,6 +321,7 @@ static const parser_t parse_job[] = {
 	/* skip blockid (deprecated bluegene) */
 	_add_parse(STRING, cluster, "cluster"),
 	_add_parse(STRING, constraints, "constraints"),
+	_add_parse(STRING, container, "container"),
 	/* skip db_index */
 	_add_parse(JOB_EXIT_CODE, derived_ec, "derived_exit_code"),
 	_add_parse(STRING, derived_es, "comment/job"),
@@ -321,8 +330,7 @@ static const parser_t parse_job[] = {
 	_add_parse(UINT32, eligible, "time/eligible"),
 	_add_parse(UINT32, end, "time/end"),
 	_add_parse(JOB_EXIT_CODE, exitcode, "exit_code"),
-	add_parser_flags(parser_job_flags, slurmdb_job_rec_t, false, flags,
-			 "flags"),
+	add_parser_flags(parser_job_flags, false, "flags"),
 	/* skipping first_step_ptr (already added in steps) */
 	_add_parse(GROUP_ID, gid, "group"),
 	_add_parse(UINT32, het_job_id, "het/job_id"),
@@ -382,8 +390,7 @@ static const parser_t parse_acct[] = {
 	_add_parse(STRING, description, "description"),
 	_add_parse(STRING, name, "name"),
 	_add_parse(STRING, organization, "organization"),
-	add_parser_flags(parser_acct_flags, slurmdb_account_rec_t, false, flags,
-			 "flags"),
+	add_parser_flags(parser_acct_flags, false, "flags"),
 };
 #undef _add_parse
 
@@ -418,8 +425,7 @@ static const parser_t parse_wckey[] = {
 	_add_parse_req(STRING, name, "name"),
 	_add_parse_req(STRING, user, "user"),
 	/* skipping uid */
-	add_parser_flags(parser_wckey_flags, slurmdb_wckey_rec_t, false, flags,
-			 "flags"),
+	add_parser_flags(parser_wckey_flags, false, "flags"),
 };
 #undef _add_parse
 #undef _add_parse_req
@@ -481,8 +487,7 @@ static const parser_enum_t parser_qos_preempt_flags[] = {
 static const parser_t parse_qos[] = {
 	/* skipping accounting_list */
 	_add_parse(STRING, description, "description"),
-	add_parser_flags(parser_qos_flags, slurmdb_qos_rec_t, false, flags,
-			 "flags"),
+	add_parser_flags(parser_qos_flags, false, "flags"),
 	_add_parse(UINT32, id, "id"),
 	_add_parse(UINT32, grace_time, "limits/grace_time"),
 	_add_parse(UINT32, grp_jobs_accrue, "limits/max/active_jobs/accruing"),
@@ -492,7 +497,7 @@ static const parser_t parse_qos[] = {
 	_add_parse(TRES_LIST, grp_tres_run_mins,
 		   "limits/max/tres/minutes/per/qos"),
 	/* skipping grp_tres_run_mins_ctld (not packed) */
-	_add_parse_req(STRING, name, "name"),
+	_add_parse(STRING, name, "name"),
 	_add_parse(UINT32, grp_wall, "limits/max/wall_clock/per/qos"),
 	_add_parse(FLOAT64, limit_factor, "limits/factor"),
 	_add_parse(UINT32, max_jobs_pa,
@@ -526,8 +531,7 @@ static const parser_t parse_qos[] = {
 	/* skipping min_tres_pj_ctld (not packed) */
 	add_parser_qos_preempt(false, "preempt/list"),
 	/* skip preempt_list (only for ops) */
-	add_parser_flags(parser_qos_preempt_flags, slurmdb_qos_rec_t, false,
-			 preempt_mode, "preempt/mode"),
+	add_parser_flags(parser_qos_preempt_flags, false, "preempt/mode"),
 	_add_parse(UINT32, preempt_exempt_time, "preempt/exempt_time"),
 	_add_parse(UINT32, priority, "priority"),
 	/* skip usage (not packed) */
@@ -564,8 +568,7 @@ static const parser_t parse_job_step[] = {
 	_add_parse(STRING, pid_str, "pid"),
 	_add_parse(UINT32, req_cpufreq_min, "CPU/requested_frequency/min"),
 	_add_parse(UINT32, req_cpufreq_max, "CPU/requested_frequency/max"),
-	add_parser_flags(parse_job_step_cpu_freq_flags, slurmdb_step_rec_t,
-			 false, req_cpufreq_gov, "CPU/governor"),
+	add_parser_flags(parse_job_step_cpu_freq_flags, false, "CPU/governor"),
 	_add_parse(USER_ID, requid, "kill_request_user"),
 	_add_parse(UINT32, start, "time/start"),
 	_add_parse(JOB_STATE, state, "state"),
@@ -664,8 +667,7 @@ static const parser_t parse_cluster_rec[] = {
 	_add_parse(UINT32, control_port, "controller/port"),
 	/* skip dim_size (BG deprecated) */
 	/* skip fed[eration] support */
-	add_parser_flags(parse_cluster_rec_flags, slurmdb_cluster_rec_t, false,
-			 flags, "flags"),
+	add_parser_flags(parse_cluster_rec_flags, false, "flags"),
 	/* skip lock (not packed) */
 	_add_parse(STRING, name, "name"),
 	_add_parse(STRING, nodes, "nodes"),
@@ -864,7 +866,7 @@ static int _parse_to_uint16(const parser_t *const parse, void *obj, data_t *str,
 static int _dump_to_uint16(const parser_t *const parse, void *obj, data_t *dst,
 			   const parser_env_t *penv)
 {
-	int16_t *src = (((void *)obj) + parse->field_offset);
+	uint16_t *src = (((void *)obj) + parse->field_offset);
 
 	xassert(data_get_type(dst) == DATA_TYPE_NULL);
 
@@ -899,7 +901,7 @@ static int _parse_to_uint64(const parser_t *const parse, void *obj, data_t *str,
 static int _dump_to_uint64(const parser_t *const parse, void *obj, data_t *dst,
 			   const parser_env_t *penv)
 {
-	int64_t *src = (((void *)obj) + parse->field_offset);
+	uint64_t *src = (((void *)obj) + parse->field_offset);
 
 	xassert(data_get_type(dst) == DATA_TYPE_NULL);
 
@@ -1272,13 +1274,23 @@ static int _dump_qos_str_list(const parser_t *const parse, void *obj,
 		.magic = MAGIC_FOREACH_DUMP_QOS_STR_LIST,
 		.qos = dst,
 	};
+	/* Convert list of QOS id strings into actual name strings */
+	List qos_list_names = get_qos_name_list(penv->g_qos_list, *qos_list);
+	if (!qos_list_names)
+		return SLURM_SUCCESS;
+
+	list_sort(qos_list_names, slurm_sort_char_list_asc);
 
 	xassert(data_get_type(dst) == DATA_TYPE_NULL);
 	data_set_list(dst);
 
-	if (list_for_each(*qos_list, _foreach_dump_qos_str_list, &args) < 0)
+	if (list_for_each(qos_list_names, _foreach_dump_qos_str_list,
+			  &args) < 0) {
+		FREE_NULL_LIST(qos_list_names);
 		return ESLURM_DATA_CONV_FAILED;
+	}
 
+	FREE_NULL_LIST(qos_list_names);
 	return SLURM_SUCCESS;
 }
 
@@ -1786,7 +1798,16 @@ static int _find_tres_id(void *x, void *key)
 
 	xassert(args->magic == MAGIC_FIND_TRES);
 
-	if ((args->tres->id > 0) && args->tres->id == tres->id)
+	debug5("Comparing database tres(name:%s, type:%s, id:%u) with requested(name:%s, type:%s, id:%u).",
+	       tres->name, tres->type, tres->id,
+	       args->tres->name, args->tres->type, args->tres->id);
+
+	if ((args->tres->id > 0) &&
+	    ((args->tres->id == tres->id) &&
+	     (!args->tres->type ||
+	      !xstrcasecmp(args->tres->type, tres->type)) &&
+	     (!args->tres->name ||
+	      !xstrcasecmp(args->tres->name, tres->name))))
 		return 1;
 	if ((!args->tres->name || !args->tres->name[0]) &&
 	    !xstrcasecmp(args->tres->type, tres->type))
@@ -1831,13 +1852,26 @@ static data_for_each_cmd_t _for_each_parse_tres_count(data_t *data, void *arg)
 	if ((ftres = list_find_first(args->penv->g_tres_list, _find_tres_id,
 				     &targs))) {
 		if ((tres->id > 0) && tres->id != ftres->id) {
-			resp_error(errors, ESLURM_INVALID_TRES,
-				   "TRES id unknown", "id");
+			char *msg = NULL;
+			xstrfmtcat(msg,
+				   "Requested TRES id(%d) doesn't match TRES type/name(%s/%s) which id is %d",
+				   tres->id, ftres->type, ftres->name,
+				   ftres->id);
+			resp_error(errors, ESLURM_INVALID_TRES, msg, __func__);
+			xfree(msg);
 			return DATA_FOR_EACH_FAIL;
 		}
 
 		if (!tres->id)
 			tres->id = ftres->id;
+	} else {
+		char *msg = NULL;
+		xstrfmtcat(msg,
+			   "Couldn't find TRES matching name:%s type:%s",
+			   targs.tres->name, targs.tres->type);
+		resp_error(errors, ESLURM_INVALID_TRES, msg, __func__);
+		xfree(msg);
+		return DATA_FOR_EACH_FAIL;
 	}
 
 	return DATA_FOR_EACH_CONT;
@@ -1847,6 +1881,7 @@ static int _parse_tres_list(const parser_t *const parse, void *obj, data_t *src,
 			    data_t *errors, const parser_env_t *penv)
 {
 	char **tres = (((void *)obj) + parse->field_offset);
+	int rc;
 	for_each_parse_tres_t args = {
 		.magic = MAGIC_FOREACH_PARSE_TRES_COUNT,
 		.penv = penv,
@@ -1856,19 +1891,28 @@ static int _parse_tres_list(const parser_t *const parse, void *obj, data_t *src,
 
 	if (!penv->g_tres_list) {
 		xassert(penv->g_tres_list);
-		return ESLURM_NOT_SUPPORTED;
+		rc = ESLURM_NOT_SUPPORTED;
+		goto cleanup;
 	}
 
-	if (data_get_type(src) != DATA_TYPE_LIST)
-		return ESLURM_REST_FAIL_PARSING;
+	if (data_get_type(src) != DATA_TYPE_LIST) {
+		rc = ESLURM_REST_FAIL_PARSING;
+		goto cleanup;
+	}
 
-	if (data_list_for_each(src, _for_each_parse_tres_count, &args) < 0)
-		return ESLURM_REST_FAIL_PARSING;
+	if (data_list_for_each(src, _for_each_parse_tres_count, &args) < 0) {
+		rc = ESLURM_REST_FAIL_PARSING;
+		goto cleanup;
+	}
 
 	if ((*tres = slurmdb_make_tres_string(args.tres, TRES_STR_FLAG_SIMPLE)))
-		return SLURM_SUCCESS;
+		rc = SLURM_SUCCESS;
 	else
-		return ESLURM_REST_FAIL_PARSING;
+		rc = ESLURM_REST_FAIL_PARSING;
+
+cleanup:
+	FREE_NULL_LIST(args.tres);
+	return rc;
 }
 
 #define MAGIC_LIST_PER_TRES 0xf7f8baf0
@@ -2902,21 +2946,33 @@ static int _parser_run(void *obj, const parser_t *const parse,
 	int rc = SLURM_SUCCESS;
 
 	for (int i = 0; (!rc) && (i < parse_member_count); i++) {
-		for (int f = 0; f < ARRAY_SIZE(funcs); f++) {
-			data_t *pd = data_resolve_dict_path(data, parse[i].key);
+		data_t *pd = data_resolve_dict_path(data, parse[i].key);
+		for (int f = 0; pd && (f < ARRAY_SIZE(funcs)); f++) {
 
-			if (pd && parse[i].type == funcs[f].type) {
+			if (parse[i].type == funcs[f].type) {
 				xassert(funcs[f].rfunc);
 				rc = funcs[f].rfunc((parse + i), obj, pd,
 						    errors, penv);
+				break;
 			}
 		}
 
-		if (rc && parse[i].required)
-			resp_error(errors, rc, "Required field failed to parse",
-				   parse[i].key);
-		else
-			rc = SLURM_SUCCESS;
+		if (!pd && parse[i].required) {
+			char *tmp_str =
+				xstrdup_printf("Missing required field '%s'",
+					       parse[i].key);
+			resp_error(errors, rc, tmp_str, __func__);
+			xfree(tmp_str);
+			break;
+		} else if (rc) {
+			char *tmp_str =
+				xstrdup_printf("Failed to parse %sfield '%s'",
+					       parse[i].required ?
+					       "required " : "",
+					       parse[i].key);
+			resp_error(errors, rc, tmp_str, __func__);
+			xfree(tmp_str);
+		}
 	}
 
 	return rc;

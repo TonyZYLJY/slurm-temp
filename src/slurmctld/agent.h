@@ -54,6 +54,8 @@ typedef struct agent_arg {
 	uint32_t	node_count;	/* number of nodes to communicate
 					 * with */
 	uint16_t	retry;		/* if set, keep trying */
+	uid_t r_uid;			/* receiver UID */
+	bool r_uid_set;			/* true if receiver UID set */
 	slurm_addr_t    *addr;          /* if set will send to this
 					   addr not hostlist */
 	hostlist_t	hostlist;	/* hostlist containing the
@@ -89,8 +91,9 @@ extern void agent_queue_request(agent_arg_t *agent_arg_ptr);
  * IN mail_too - Send pending email too, note this performed using a
  *	fork/waitpid, so it can take longer than just creating a pthread
  *	to send RPCs
+ * IN check_defer - force defer_list check
  */
-extern void agent_trigger(int min_wait, bool mail_too);
+extern void agent_trigger(int min_wait, bool mail_too, bool check_defer);
 
 /* agent_purge - purge all pending RPC requests */
 extern void agent_purge(void);
@@ -113,5 +116,8 @@ extern void mail_job_info(job_record_t *job_ptr, uint16_t mail_type);
 
 /* Return length of agent's retry_list */
 extern int retry_list_size(void);
+
+/* Set r_uid of agent_arg */
+extern void set_agent_arg_r_uid(agent_arg_t *agent_arg_ptr, uid_t r_uid);
 
 #endif /* !_AGENT_H */

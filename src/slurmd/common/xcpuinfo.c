@@ -318,6 +318,11 @@ extern int xcpuinfo_hwloc_topo_get(
 	objtype[SOCKET] = HWLOC_OBJ_SOCKET;
 	objtype[CORE]   = HWLOC_OBJ_CORE;
 	objtype[PU]     = HWLOC_OBJ_PU;
+#if HWLOC_API_VERSION >= 0x00020000
+	if (xstrcasestr(slurm_conf.sched_params, "Ignore_NUMA")) {
+		info("SchedulerParamaters=Ignore_NUMA not supported by hwloc v2");
+	}
+#else
 	if (hwloc_get_type_depth(topology, HWLOC_OBJ_NODE) >
 	    hwloc_get_type_depth(topology, HWLOC_OBJ_SOCKET)) {
 		if (xstrcasestr(slurm_conf.sched_params, "Ignore_NUMA")) {
@@ -327,12 +332,32 @@ extern int xcpuinfo_hwloc_topo_get(
 			objtype[SOCKET] = HWLOC_OBJ_NODE;
 		}
 	}
+#endif
 
 	if (xstrcasestr(slurm_conf.slurmd_params, "l3cache_as_socket")) {
 #if HWLOC_API_VERSION >= 0x00020000
 		objtype[SOCKET] = HWLOC_OBJ_L3CACHE;
 #else
 		error("SlurmdParameters=l3cache_as_socket requires hwloc v2");
+#endif
+	} else if (xstrcasestr(slurm_conf.slurmd_params,
+			       "numa_node_as_socket")) {
+#if HWLOC_API_VERSION >= 0x00020000
+		hwloc_obj_t numa_obj = hwloc_get_next_obj_by_type(
+			topology, HWLOC_OBJ_NODE, NULL);
+
+		if (numa_obj && numa_obj->parent) {
+			objtype[SOCKET] = numa_obj->parent->type;
+			if (get_log_level() >= LOG_LEVEL_DEBUG2) {
+				char tmp[128];
+				hwloc_obj_type_snprintf(tmp, sizeof(tmp),
+							numa_obj->parent, 0);
+				debug2("%s: numa_node_as_socket mapped to '%s'",
+				       __func__, tmp);
+			}
+		}
+#else
+		error("SlurmdParameters=numa_node_as_socket requires hwloc v2");
 #endif
 	}
 

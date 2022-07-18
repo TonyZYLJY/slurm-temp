@@ -1,0 +1,11 @@
+# Slurm Source Directory (contains configure.ac and the src directory)
+SlurmSourceDir=/home/tony/Desktop/slurm-22.05.2
+
+# Slurm Build Directory (where you ran configure and make from)
+SlurmBuildDir=/home/tony/Desktop/slurm-22.05.2
+
+# Slurm Installation Directory (value of --prefix configure option)
+SlurmInstallDir=/usr/local
+
+# Slurm Configuration Directory (compiled-in location of slurm.conf)
+SlurmConfigDir=/usr/local/etc

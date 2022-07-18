@@ -221,6 +221,93 @@ static int _set_qos_cnt(mysql_conn_t *mysql_conn)
 	return SLURM_SUCCESS;
 }
 
+/*
+ * If we are removing the association with a user's default account, don't
+ * unless are removing all of a user's assocs then removing the default assoc
+ * is ok.
+ */
+static int _check_is_def_acct_before_remove(mysql_conn_t *mysql_conn,
+					    char *cluster_name,
+					    char *assoc_char,
+					    List ret_list,
+					    bool *default_account)
+{
+	char *query, *tmp_char = NULL, *as_statement = "", *last_user = NULL;
+	MYSQL_RES *result = NULL;
+	MYSQL_ROW row;
+	int i;
+	bool other_assoc = false;
+
+	char *dassoc_inx[] = {
+		"is_def",
+		"user",
+		"acct",
+	};
+
+	enum {
+		DASSOC_IS_DEF,
+		DASSOC_USER,
+		DASSOC_ACCT,
+		DASSOC_COUNT
+	};
+
+	xassert(default_account);
+
+	xstrcat(tmp_char, dassoc_inx[0]);
+	for (i = 1; i < DASSOC_COUNT; i++)
+		xstrfmtcat(tmp_char, ", %s", dassoc_inx[i]);
+	if (!xstrncmp(assoc_char, "t2.", 3))
+		as_statement = "as t2 ";
+
+	/* Query all the user associations given */
+	query = xstrdup_printf("select %s from \"%s_%s\" %swhere deleted=0 && user!='' && (%s) order by user, is_def asc",
+			       tmp_char, cluster_name, assoc_table,
+			       as_statement, assoc_char);
+	xfree(tmp_char);
+	DB_DEBUG(DB_ASSOC, mysql_conn->conn, "query\n%s", query);
+
+	result = mysql_db_query_ret(mysql_conn, query, 0);
+	xfree(query);
+
+	if (!result)
+		return *default_account;
+
+	while ((row = mysql_fetch_row(result))) {
+		if (!xstrcmp(last_user, row[DASSOC_USER])) {
+			other_assoc = false;
+			last_user = row[DASSOC_USER];
+		}
+
+		if (row[DASSOC_IS_DEF][0] == '0') {
+			other_assoc = true;
+			continue;
+		} else if (!other_assoc) {
+			/*
+			 * We have no other association, we are just removing
+			 * this from the mix.
+			 */
+			continue;
+		}
+
+		DB_DEBUG(DB_ASSOC,  mysql_conn->conn,
+			 "Attempted removing default account (%s) of user: %s",
+			 row[DASSOC_ACCT], row[DASSOC_USER]);
+		if (!(*default_account)) {
+			*default_account = true;
+			list_flush(ret_list);
+			reset_mysql_conn(mysql_conn);
+		}
+		tmp_char = xstrdup_printf("C = %-15s A = %-10s U = %-9s",
+					  cluster_name, row[DASSOC_ACCT],
+					  row[DASSOC_USER]);
+		list_append(ret_list, tmp_char);
+	}
+
+	mysql_free_result(result);
+	return *default_account;
+
+}
+
 static void _process_running_jobs_result(char *cluster_name,
 					 MYSQL_RES *result, List ret_list)
 {
@@ -1286,7 +1373,7 @@ extern int create_cluster_tables(mysql_conn_t *mysql_conn, char *cluster_name)
 		{ "id_group", "int unsigned not null" },
 		{ "het_job_id", "int unsigned not null" },
 		{ "het_job_offset", "int unsigned not null" },
-		{ "kill_requid", "int default -1 not null" },
+		{ "kill_requid", "int unsigned default null" },
 		{ "state_reason_prev", "int unsigned not null" },
 		{ "mcs_label", "tinytext default ''" },
 		{ "mem_req", "bigint unsigned default 0 not null" },
@@ -1308,7 +1395,6 @@ extern int create_cluster_tables(mysql_conn_t *mysql_conn, char *cluster_name)
 		{ "work_dir", "text not null default ''" },
 		{ "submit_line", "text" },
 		{ "system_comment", "text" },
-		{ "track_steps", "tinyint not null" },
 		{ "tres_alloc", "text not null default ''" },
 		{ "tres_req", "text not null default ''" },
 		{ NULL, NULL}
@@ -1358,7 +1444,7 @@ extern int create_cluster_tables(mysql_conn_t *mysql_conn, char *cluster_name)
 		{ "exit_code", "int default 0 not null" },
 		{ "id_step", "int not null" },
 		{ "step_het_comp", "int unsigned default 0xfffffffe not null" },
-		{ "kill_requid", "int default -1 not null" },
+		{ "kill_requid", "int unsigned default null" },
 		{ "nodelist", "text not null" },
 		{ "nodes_alloc", "int unsigned not null" },
 		{ "node_inx", "text" },
@@ -2105,7 +2191,8 @@ extern int remove_common(mysql_conn_t *mysql_conn,
 			 char *assoc_char,
 			 char *cluster_name,
 			 List ret_list,
-			 bool *jobs_running)
+			 bool *jobs_running,
+			 bool *default_account)
 {
 	int rc = SLURM_SUCCESS;
 	char *query = NULL;
@@ -2125,6 +2212,15 @@ extern int remove_common(mysql_conn_t *mysql_conn,
 	    || (table == res_table) || (table == clus_res_table)
 	    || (table == federation_table))
 		cluster_centric = false;
+
+	if (((table == assoc_table) || (table == acct_table))) {
+		if (_check_is_def_acct_before_remove(mysql_conn,
+						     cluster_name,
+						     assoc_char,
+						     ret_list,
+						     default_account))
+			return SLURM_SUCCESS;
+	}
 
 	/* If we have jobs associated with this we do not want to
 	 * really delete it for accounting purposes.  This is for
@@ -2467,7 +2563,7 @@ just_update:
 			       "grp_tres_mins=DEFAULT, "
 			       "grp_tres_run_mins=DEFAULT, "
 			       "qos=DEFAULT, delta_qos=DEFAULT, "
-			       "priority=DEFAULT "
+			       "priority=DEFAULT, is_def=DEFAULT "
 			       "where (%s);",
 			       cluster_name, assoc_table, now,
 			       loc_assoc_char);
@@ -3276,6 +3372,11 @@ extern int clusteracct_storage_p_node_down(mysql_conn_t *mysql_conn,
 				  event_time, reason, reason_uid);
 }
 
+extern char *acct_storage_p_node_inx(void *db_conn, char *nodes)
+{
+	return NULL;
+}
+
 extern int clusteracct_storage_p_node_up(mysql_conn_t *mysql_conn,
 					 node_record_t *node_ptr,
 					 time_t event_time)
@@ -3520,6 +3621,12 @@ extern int acct_storage_p_get_data(void *db_conn, acct_storage_info_t dinfo,
 				   void *data)
 {
 	return SLURM_SUCCESS;
+}
+
+extern void acct_storage_p_send_all(void *db_conn, time_t event_time,
+				    slurm_msg_type_t msg_type)
+{
+	return;
 }
 
 extern int acct_storage_p_shutdown(void *db_conn, bool dbd)

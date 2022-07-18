@@ -94,12 +94,13 @@ const char * plugin_strerror(plugin_err_t e)
 		case EPLUGIN_BAD_VERSION:
 			return ("Incompatible plugin version");
 	}
+	error("%s: Unknown plugin error: %d", __func__, e);
 	return ("Unknown error");
 }
 
-static int _verify_syms(plugin_handle_t plug, char *plugin_type,
-			const size_t type_len, const char *caller,
-			const char *fq_path)
+static plugin_err_t _verify_syms(plugin_handle_t plug, char *plugin_type,
+				 const size_t type_len, const char *caller,
+				 const char *fq_path)
 {
 	char *type, *name;
 	uint32_t *version;
@@ -114,7 +115,7 @@ static int _verify_syms(plugin_handle_t plug, char *plugin_type,
 	if (!(type = dlsym(plug, PLUGIN_TYPE))) {
 		verbose("%s: %s is not a Slurm plugin: %s",
 			caller, fq_path, _dlerror());
-		return ESLURM_PLUGIN_INVALID;
+		return EPLUGIN_MISSING_NAME;
 	}
 
 	if (plugin_type) {
@@ -125,7 +126,7 @@ static int _verify_syms(plugin_handle_t plug, char *plugin_type,
 	if (!version) {
 		verbose("%s: %s symbol not found in %s: %s",
 			caller, PLUGIN_VERSION, fq_path, _dlerror());
-		return ESLURM_PLUGIN_INVALID;
+		return EPLUGIN_MISSING_NAME;
 	}
 
 	debug3("%s->%s: found Slurm plugin name:%s type:%s version:0x%x",
@@ -143,21 +144,21 @@ static int _verify_syms(plugin_handle_t plug, char *plugin_type,
 
 		info("%s: Incompatible Slurm plugin %s version (%d.%02d.%d)",
 		     caller, fq_path, plugin_major, plugin_minor, plugin_micro);
-		return ESLURM_PLUGIN_INVALID;
+		return EPLUGIN_BAD_VERSION;
 	}
 
-	return SLURM_SUCCESS;
+	return EPLUGIN_SUCCESS;
 }
 
-extern int plugin_peek(const char *fq_path, char *plugin_type,
-		       const size_t type_len, uint32_t *plugin_version)
+extern plugin_err_t plugin_peek(const char *fq_path, char *plugin_type,
+				const size_t type_len, uint32_t *plugin_version)
 {
-	int rc;
+	plugin_err_t rc;
 	plugin_handle_t plug;
 
 	if (!(plug = dlopen(fq_path, RTLD_LAZY))) {
 		debug3("%s: dlopen(%s): %s", __func__, fq_path, _dlerror());
-		return SLURM_ERROR;
+		return EPLUGIN_DLOPEN_FAILED;
 	}
 
 	rc = _verify_syms(plug, plugin_type, type_len, __func__, fq_path);
@@ -168,7 +169,7 @@ extern int plugin_peek(const char *fq_path, char *plugin_type,
 plugin_err_t
 plugin_load_from_file(plugin_handle_t *p, const char *fq_path)
 {
-	int rc;
+	plugin_err_t rc;
 	plugin_handle_t plug;
 	int (*init)(void);
 
@@ -184,6 +185,7 @@ plugin_load_from_file(plugin_handle_t *p, const char *fq_path)
 	 * used in the context of srun, not slurmd.)
 	 *
 	 */
+	printf("%s\n\n", fq_path);
 	plug = dlopen(fq_path, RTLD_LAZY);
 	if (plug == NULL) {
 		error("plugin_load_from_file: dlopen(%s): %s",
@@ -192,7 +194,8 @@ plugin_load_from_file(plugin_handle_t *p, const char *fq_path)
 		return EPLUGIN_DLOPEN_FAILED;
 	}
 
-	if ((rc = _verify_syms(plug, NULL, 0, __func__, fq_path))) {
+	rc = _verify_syms(plug, NULL, 0, __func__, fq_path);
+	if (rc != EPLUGIN_SUCCESS) {
 		dlclose(plug);
 		return rc;
 	}
@@ -231,29 +234,20 @@ plugin_load_and_link(const char *type_name, int n_syms,
 	int i = 0;
 	plugin_err_t err = EPLUGIN_NOTFOUND;
 
-	// if type name is null, return PLUGIN_INVALID_HANDLE
 	if (!type_name)
 		return plug;
-
-	// return copy of formated string->scheduler name
-	// formatting scheduler name?
 	so_name = xstrdup_printf("%s.so", type_name);
-	// infinite looping?
 	while (so_name[i]) {
 		if (so_name[i] == '/')
 			so_name[i] = '_';
 		i++;
 	}
-
-	// copy plugin directory from slurm.conf
-	// if NULL, print error message, return INVALID
 	if (!(dir_array = xstrdup(slurm_conf.plugindir))) {
 		error("plugin_load_and_link: No plugin dir given");
 		xfree(so_name);
 		return plug;
 	}
 
-	// point head to dir_array
 	head = dir_array;
 	for (i = 0; ; i++) {
 		bool got_colon = 0;
@@ -263,7 +257,6 @@ plugin_load_and_link(const char *type_name, int n_syms,
 		} else if (dir_array[i] != '\0')
 			continue;
 
-		// return copy of formatted string
 		file_name = xstrdup_printf("%s/%s", head, so_name);
 		debug3("Trying to load plugin %s", file_name);
 		if ((stat(file_name, &st) < 0) || (!S_ISREG(st.st_mode))) {
@@ -406,12 +399,10 @@ extern plugin_context_t *plugin_context_create(
 {
 	plugin_context_t *c;
 	int n_names;
-
-	// uler = scheduler type
+	
 	if (!uler_type) {
 		debug3("plugin_context_create: no uler type");
 		return NULL;
-	// plugin type which is "sched"
 	} else if (!plugin_type) {
 		debug3("plugin_context_create: no plugin type");
 		return NULL;

@@ -240,15 +240,13 @@ static int _process_service_connection(
 		if (msg_read == 0)	/* EOF */
 			break;
 		if (msg_read != sizeof(nw_size)) {
-			error("Could not read msg_size from "
-			      "connection %d(%s) uid(%d)",
+			error("Could not read msg_size from connection %d(%s) uid(%u)",
 			      persist_conn->fd, persist_conn->rem_host, uid);
 			break;
 		}
 		msg_size = ntohl(nw_size);
 		if ((msg_size < 2) || (msg_size > MAX_MSG_SIZE)) {
-			error("Invalid msg_size (%u) from "
-			      "connection %d(%s) uid(%d)",
+			error("Invalid msg_size (%u) from connection %d(%s) uid(%u)",
 			      msg_size, persist_conn->fd,
 			      persist_conn->rem_host, uid);
 			break;
@@ -283,8 +281,7 @@ static int _process_service_connection(
 				    rc != ACCOUNTING_FIRST_REG &&
 				    rc != ACCOUNTING_TRES_CHANGE_DB &&
 				    rc != ACCOUNTING_NODES_CHANGE_DB) {
-					error("Processing last message from "
-					      "connection %d(%s) uid(%d)",
+					error("Processing last message from connection %d(%s) uid(%u)",
 					      persist_conn->fd,
 					      persist_conn->rem_host, uid);
 					if (rc == ESLURM_ACCESS_DENIED ||
@@ -308,7 +305,7 @@ static int _process_service_connection(
 				 * deal as the slurmctld will just send the
 				 * message again. */
 				if (persist_conn->rem_port)
-					log_flag(NET, "%s: Problem sending response to connection host:%s fd:%d uid:%d",
+					log_flag(NET, "%s: Problem sending response to connection host:%s fd:%d uid:%u",
 						 __func__,
 						 persist_conn->rem_host,
 						 persist_conn->fd, uid);
@@ -318,7 +315,7 @@ static int _process_service_connection(
 		}
 	}
 
-	log_flag(NET, "%s: Closed connection host:%s fd:%d uid:%d",
+	log_flag(NET, "%s: Closed connection host:%s fd:%d uid:%u",
 		 __func__, persist_conn->rem_host, persist_conn->fd, uid);
 
 	return rc;
@@ -572,7 +569,6 @@ extern int slurm_persist_conn_open_without_init(
 		return SLURM_ERROR;
 	}
 	fd_set_nonblocking(persist_conn->fd);
-	fd_set_close_on_exec(persist_conn->fd);
 
 	return SLURM_SUCCESS;
 }
@@ -606,6 +602,7 @@ extern int slurm_persist_conn_open(slurm_persist_conn_t *persist_conn)
 	req_msg.flags |= SLURM_GLOBAL_AUTH_KEY;
 	if (persist_conn->flags & PERSIST_FLAG_DBD)
 		req_msg.flags |= SLURMDBD_CONNECTION;
+	slurm_msg_set_r_uid(&req_msg, persist_conn->r_uid);
 
 	memset(&req, 0, sizeof(persist_init_req_msg_t));
 	req.cluster_name = persist_conn->cluster_name;

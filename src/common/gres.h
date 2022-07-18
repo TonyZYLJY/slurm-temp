@@ -66,11 +66,23 @@ typedef enum {
 	GRES_INTERNAL_FLAG_PROTECT_ENV = 2 << 0,
 } gres_internal_flags_t;
 
+typedef enum {
+	DEV_TYPE_NONE,
+	DEV_TYPE_BLOCK,
+	DEV_TYPE_CHAR,
+} gres_device_type_t;
+
+typedef struct {
+	uint32_t major;
+	uint32_t minor;
+	gres_device_type_t type;
+} gres_device_id_t;
+
 typedef struct {
 	int index; /* GRES bitmap index */
 	int alloc;
+	gres_device_id_t dev_desc;
 	int dev_num; /* Number at the end of the device filename */
-	char *major;
 	char *path;
 	char *unique_id; /* Used for GPU binding with MIGs */
 } gres_device_t;
@@ -90,7 +102,9 @@ typedef struct {
 #define GRES_CONF_ONE_SHARING SLURM_BIT(10) /* Only allow use of a shared GRES
 					     * on one of the sharing GRES */
 
-#define GRES_CONF_ENV_SET    0x000000E0   /* Easy check if any of
+#define GRES_CONF_ENV_ONEAPI SLURM_BIT(11) /* Set ZE_AFFINITY_MASK */
+
+#define GRES_CONF_ENV_SET    0x000008E0   /* Easy check if any of
 					   * GRES_CONF_ENV_* are set. */
 
 #define GRES_NO_CONSUME		0x0001	/* Requesting no consume of resources */
@@ -100,6 +114,7 @@ typedef struct {
 #define GRES_AUTODETECT_GPU_NVML  0x00000001
 #define GRES_AUTODETECT_GPU_RSMI  0x00000002
 #define GRES_AUTODETECT_GPU_OFF   0x00000004 /* Do NOT use global */
+#define GRES_AUTODETECT_GPU_ONEAPI 0x00000008
 
 #define GRES_AUTODETECT_GPU_FLAGS 0x000000ff /* reserve first 8 bits for gpu
 					      * flags */
@@ -333,7 +348,7 @@ typedef struct gres_step_state {
 					 * GRES that could be available for this
 					 * step if no other steps active */
 	uint64_t *gres_cnt_node_alloc;	/* Per node GRES allocated,
-					 * Used without GRES files */
+					 * Used with and without GRES files */
 	uint32_t node_cnt;
 	bitstr_t *node_in_use;
 	bitstr_t **gres_bit_alloc;	/* Used with GRES files */
@@ -1024,8 +1039,8 @@ extern int gres_get_step_info(List step_gres_list, char *gres_name,
 
 extern uint32_t gres_get_autodetect_flags(void);
 
-/* return the major info from a given path of a device */
-extern char *gres_device_major(char *dev_path);
+/* Convert the major/minor info to a string */
+extern char *gres_device_id2str(gres_device_id_t *gres_dev);
 
 /* Free memory for gres_device_t record */
 extern void destroy_gres_device(void *gres_device_ptr);
@@ -1083,7 +1098,8 @@ extern int gres_find_sock_by_job_state(void *x, void *key);
 /*
  * Test if GRES env variables should be set to global device ID or a device
  * ID that always starts at zero (based upon what the application can see).
- * RET true if TaskPlugin=task/cgroup AND ConstrainDevices=yes (in cgroup.conf).
+ * RET true if TaskPlugin in slurm.conf contains `cgroup` (task/cgroup) AND
+ * ConstrainDevices=yes in cgroup.conf.
  */
 extern bool gres_use_local_device_index(void);
 
@@ -1167,5 +1183,12 @@ extern int gres_links_validate(char *links);
 /* Determine if the gres should only allow allocation on the busy one */
 extern bool gres_use_busy_dev(gres_state_t *gres_state_node,
 			      bool use_total_gres);
+
+/*
+ * Dummy reading of gres.conf without loading data.
+ * Meant to be used by slurmctld to discover Include files and append them
+ * to conf_includes_list for configless files push.
+ */
+extern void gres_parse_config_dummy(void);
 
 #endif /* !_GRES_H */

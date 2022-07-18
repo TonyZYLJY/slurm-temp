@@ -108,7 +108,8 @@ static const node_state_flags_t node_state_flags[] = {
 	{ NODE_STATE_CLOUD, "CLOUD" },
 	{ NODE_STATE_COMPLETING, "COMPLETING" },
 	{ NODE_STATE_DRAIN, "DRAIN" },
-	{ NODE_STATE_DYNAMIC, "DYNAMIC" },
+	{ NODE_STATE_DYNAMIC_FUTURE, "DYNAMIC_FUTURE" },
+	{ NODE_STATE_DYNAMIC_NORM, "DYNAMIC_NORM" },
 	{ NODE_STATE_INVALID_REG, "INVALID_REG" },
 	{ NODE_STATE_FAIL, "FAIL" },
 	{ NODE_STATE_MAINT, "MAINTENANCE" },
@@ -141,24 +142,23 @@ static void _free_all_step_info (job_step_info_response_msg_t *msg);
 
 static char *_convert_to_id(char *name, bool gid)
 {
+	char *tmp_name;
 	if (gid) {
 		gid_t gid;
 		if (gid_from_string( name, &gid )) {
 			error("Invalid group id: %s", name);
 			return NULL;
 		}
-		xfree(name);
-		name = xstrdup_printf( "%d", (int) gid );
+		tmp_name = xstrdup_printf("%u", gid);
 	} else {
 		uid_t uid;
 		if (uid_from_string( name, &uid )) {
 			error("Invalid user id: %s", name);
 			return NULL;
 		}
-		xfree(name);
-		name = xstrdup_printf( "%d", (int) uid );
+		tmp_name = xstrdup_printf("%u", uid);
 	}
-	return name;
+	return tmp_name;
 }
 
 /*
@@ -211,6 +211,8 @@ extern void slurm_msg_t_copy(slurm_msg_t *dest, slurm_msg_t *src)
 #endif
 
 	dest->orig_addr.ss_family = AF_UNSPEC;
+	if (src->auth_uid_set)
+		slurm_msg_set_r_uid(dest, src->auth_uid);
 }
 
 /* here to add \\ to all \" in a string this needs to be xfreed later */
@@ -249,6 +251,25 @@ extern List slurm_copy_char_list(List char_list)
 	list_iterator_destroy(itr);
 
 	return ret_list;
+}
+
+/*
+ * ListFindF to find exact string in char pointer List.
+ *
+ * IN: x, list data (char *).
+ * IN: key, string to be found.
+ *
+ * RET: 1 if found, 0 otherwise
+ */
+extern int slurm_find_char_exact_in_list(void *x, void *key)
+{
+	char *str1 = x;
+	char *str2 = key;
+
+	if (!xstrcmp(str1, str2))
+		return 1;
+
+	return 0;
 }
 
 extern int slurm_find_char_in_list(void *x, void *key)
@@ -302,6 +323,63 @@ extern int slurm_char_list_copy(List dst, List src)
 	list_for_each(src, _char_list_copy, dst);
 
 	return SLURM_SUCCESS;
+}
+
+extern int slurm_parse_char_list(List char_list, char *names, void *args,
+				 int (*func_ptr)(List char_list, char *name,
+						 void *args))
+{
+	int i = 0, start = 0, count = 0, result = 0;
+	char quote_c = '\0';
+	int quote = 0;
+	char *tmp_names;
+
+	if (!names)
+		return 0;
+
+	tmp_names = xstrdup(names);
+
+	if ((tmp_names[i] == '\"') || (tmp_names[i] == '\'')) {
+		quote_c = tmp_names[i];
+		quote = 1;
+		i++;
+	}
+	start = i;
+	while (tmp_names[i]) {
+		if (quote && (tmp_names[i] == quote_c)){
+			tmp_names[i] = '\0';
+			break;
+		} else if ((tmp_names[i] == '\"') || (tmp_names[i] == '\''))
+			tmp_names[i] = '`';
+		else if (tmp_names[i] == ',') {
+			if (i != start) {
+				tmp_names[i] = '\0';
+				result = (*func_ptr)(char_list,
+						     tmp_names + start, args);
+				tmp_names[i] = ',';
+
+				if (result == SLURM_ERROR) {
+					xfree(tmp_names);
+					return SLURM_ERROR;
+				} else
+					count += result;
+			}
+			start = i + 1;
+		}
+		i++;
+	}
+
+	if (tmp_names[start]) {
+		result = (*func_ptr)(char_list, tmp_names + start, args);
+		if (result == SLURM_ERROR) {
+			xfree(tmp_names);
+			return SLURM_ERROR;
+		} else
+			count += result;
+	}
+	xfree(tmp_names);
+
+	return count;
 }
 
 extern int slurm_addto_char_list(List char_list, char *names)
@@ -397,15 +475,6 @@ extern int slurm_addto_char_list_with_case(List char_list, char *names,
 					 * ",,this".
 					 */
 					start = i + 1;
-					if (names[i + 1] == ' ') {
-						info("There is a problem "
-						     "with your request. "
-						     "It appears you have "
-						     "spaces inside your "
-						     "list.");
-						count = 0;
-						goto endit;
-					}
 				} else {
 					brack_not = false;
 					/*
@@ -477,91 +546,86 @@ extern int slurm_addto_char_list_with_case(List char_list, char *names,
 			list_append(char_list, name);
 		}
 	}
-endit:
+
 	list_iterator_destroy(itr);
 	return count;
 }
 
 /* Parses string and converts names to either uid or gid list */
+static int _slurm_addto_id_char_list_internal(List char_list, char *name,
+					      void *x)
+{
+	bool gid = *(bool *)x;
+	char *tmp_name = _convert_to_id(name, gid);
+	if (!tmp_name) {
+		list_flush(char_list);
+		return SLURM_ERROR;
+	}
+
+	if (!list_find_first(char_list, slurm_find_char_in_list, tmp_name)) {
+		list_append(char_list, tmp_name);
+		return 1;
+	} else {
+		xfree(tmp_name);
+		return 0;
+	}
+}
+
+/* Parses string and converts names to either uid or gid list */
 extern int slurm_addto_id_char_list(List char_list, char *names, bool gid)
 {
-	int i=0, start=0;
-	char *name = NULL, *tmp_char = NULL;
-	ListIterator itr = NULL;
-	char quote_c = '\0';
-	int quote = 0;
-	int count = 0;
-
 	if (!char_list) {
 		error("No list was given to fill in");
 		return 0;
 	}
 
-	itr = list_iterator_create(char_list);
-	if (names) {
-		if (names[i] == '\"' || names[i] == '\'') {
-			quote_c = names[i];
-			quote = 1;
-			i++;
-		}
-		start = i;
-		while (names[i]) {
-			//info("got %d - %d = %d", i, start, i-start);
-			if (quote && names[i] == quote_c)
-				break;
-			else if (names[i] == '\"' || names[i] == '\'')
-				names[i] = '`';
-			else if (names[i] == ',') {
-				if ((i-start) > 0) {
-					name = xmalloc((i-start+1));
-					memcpy(name, names+start, (i-start));
-					//info("got %s %d", name, i-start);
-					name = _convert_to_id(name, gid);
-					if (!name)
-						return 0;
-					while ((tmp_char = list_next(itr))) {
-						if (!xstrcasecmp(tmp_char,
-								 name))
-							break;
-					}
+	return slurm_parse_char_list(char_list, names, &gid,
+				     _slurm_addto_id_char_list_internal);
+}
 
-					if (!tmp_char) {
-						list_append(char_list, name);
-						count++;
-					} else
-						xfree(name);
-					list_iterator_reset(itr);
-				}
-				i++;
-				start = i;
-				if (!names[i]) {
-					info("There is a problem with your request.  It appears you have spaces inside your list.");
-					break;
-				}
-			}
-			i++;
-		}
-		if ((i-start) > 0) {
-			name = xmalloc((i-start)+1);
-			memcpy(name, names+start, (i-start));
-			name = _convert_to_id(name, gid);
-			if (!name)
-				return 0;
+typedef struct {
+	bool add_set;
+	bool equal_set;
+	int mode;
+} char_list_internal_args_t;
 
-			while ((tmp_char = list_next(itr))) {
-				if (!xstrcasecmp(tmp_char, name))
-					break;
-			}
+static int _slurm_addto_mode_char_list_internal(List char_list, char *name,
+						void *args_in)
+{
+	char *tmp_name = NULL;
+	char_list_internal_args_t *args = args_in;
+	char *err_msg = "You can't use '=' and '+' or '-' in the same line";
 
-			if (!tmp_char) {
-				list_append(char_list, name);
-				count++;
-			} else
-				xfree(name);
-		}
+	int tmp_mode = args->mode;
+	if ((name[0] == '+') || (name[0] == '-')) {
+		tmp_mode = name[0];
+		name++;
 	}
-	list_iterator_destroy(itr);
-	return count;
+	if (tmp_mode) {
+		if (args->equal_set) {
+			error("%s", err_msg);
+			list_flush(char_list);
+			return SLURM_ERROR;
+		}
+		args->add_set = 1;
+		tmp_name = xstrdup_printf("%c%s", tmp_mode, name);
+	} else {
+		if (args->add_set) {
+			error("%s", err_msg);
+			list_flush(char_list);
+			return SLURM_ERROR;
+		}
+		args->equal_set = 1;
+		tmp_name = xstrdup_printf("%s", name);
+	}
+
+	if (!list_find_first(char_list, slurm_find_char_in_list, tmp_name)) {
+		list_append(char_list, tmp_name);
+		return 1;
+	} else {
+		xfree(tmp_name);
+		return 0;
+	}
 }
 
 /* Parses strings such as stra,+strb,-strc and appends the default mode to each
@@ -569,206 +633,50 @@ extern int slurm_addto_id_char_list(List char_list, char *names, bool gid)
  * RET: returns the number of items added to the list. -1 on error. */
 extern int slurm_addto_mode_char_list(List char_list, char *names, int mode)
 {
-	int i=0, start=0;
-	char *m_name = NULL, *name = NULL, *tmp_char = NULL;
-	ListIterator itr = NULL;
-	char quote_c = '\0';
-	int quote = 0;
-	int count = 0;
-	int equal_set = 0;
-	int add_set = 0;
-	char *err_msg = "You can't use '=' and '+' or '-' in the same line";
+	char_list_internal_args_t args = {0};
+
+	args.mode = mode;
 
 	if (!char_list) {
 		error("No list was given to fill in");
 		return 0;
 	}
 
-	if (!names) {
-		error("You gave me an empty name list");
-		return 0;
-	}
-
-	itr = list_iterator_create(char_list);
-	if (names[i] == '\"' || names[i] == '\'') {
-		quote_c = names[i];
-		quote = 1;
-		i++;
-	}
-	start = i;
-	while(names[i]) {
-		if (quote && names[i] == quote_c)
-			break;
-		else if (names[i] == '\"' || names[i] == '\'')
-			names[i] = '`';
-		else if (names[i] == ',') {
-			if ((i-start) > 0) {
-				int tmp_mode = mode;
-				if (names[start] == '+' ||
-				    names[start] == '-') {
-					tmp_mode = names[start];
-					start++;
-				}
-				name = xstrndup(names+start, (i-start));
-				if (tmp_mode) {
-					if (equal_set) {
-						count = -1;
-						error("%s", err_msg);
-						goto end_it;
-					}
-					add_set = 1;
-					m_name = xstrdup_printf(
-						  "%c%s", tmp_mode, name);
-				} else {
-					if (add_set) {
-						count = -1;
-						error("%s", err_msg);
-						goto end_it;
-					}
-					equal_set = 1;
-					m_name = xstrdup_printf("%s", name);
-				}
-				while((tmp_char = list_next(itr))) {
-					if (!strcasecmp(tmp_char, m_name))
-						break;
-				}
-				list_iterator_reset(itr);
-
-				if (!tmp_char) {
-					list_append(char_list, m_name);
-					count++;
-				} else
-					xfree(m_name);
-				xfree(name);
-			}
-
-			i++;
-			start = i;
-			if (!names[i]) {
-				error("There is a problem with "
-				      "your request.  It appears you "
-				      "have spaces inside your list.");
-				break;
-			}
-		}
-		i++;
-	}
-
-	list_iterator_reset(itr);
-	if ((i-start) > 0) {
-		int tmp_mode = mode;
-		if (names[start] == '+' ||
-		    names[start] == '-') {
-			tmp_mode = names[start];
-			start++;
-		}
-		name = xstrndup(names+start, (i-start));
-		if (tmp_mode) {
-			if (equal_set) {
-				count = -1;
-				error("%s", err_msg);
-				goto end_it;
-			}
-			m_name = xstrdup_printf(
-				  "%c%s", tmp_mode, name);
-		} else {
-			if (add_set) {
-				count = -1;
-				error("%s", err_msg);
-				goto end_it;
-			}
-			m_name = xstrdup_printf("%s", name);
-		}
-		while((tmp_char = list_next(itr))) {
-			if (!strcasecmp(tmp_char, m_name))
-				break;
-		}
-		list_iterator_reset(itr);
-
-		if (!tmp_char) {
-			list_append(char_list, m_name);
-			count++;
-		} else
-			xfree(m_name);
-		xfree(name);
-	}
-
-end_it:
-	xfree(name);
-	list_iterator_destroy(itr);
-	return count;
+	return slurm_parse_char_list(char_list, names, &args,
+			      	     _slurm_addto_mode_char_list_internal);
 }
 
-static int _addto_step_list_internal(List step_list, char *names,
-				     int start, int end)
+static int _addto_step_list_internal(List step_list, char *name, void *x)
 {
-	int count = 0;
-	char *name;
 	slurm_selected_step_t *selected_step = NULL;
-
-	if ((end-start) <= 0)
-		return 0;
-
-	name = xmalloc((end-start+1));
-	memcpy(name, names+start, (end-start));
 
 	if (!isdigit(*name)) {
 		fatal("Bad job/step specified: %s", name);
-		xfree(name);
-		return 0;
+		return SLURM_ERROR;
 	}
 
 	selected_step = slurm_parse_step_str(name);
-	xfree(name);
 
-	if (!list_find_first(step_list,
-			     slurmdb_find_selected_step_in_list,
+	if (!list_find_first(step_list, slurmdb_find_selected_step_in_list,
 			     selected_step)) {
 		list_append(step_list, selected_step);
-		count++;
-	} else
+		return 1;
+	} else {
 		slurm_destroy_selected_step(selected_step);
-
-	return count;
+		return 0;
+	}
 }
 
 /* returns number of objects added to list */
 extern int slurm_addto_step_list(List step_list, char *names)
 {
-	int i = 0, start = 0;
-	char quote_c = '\0';
-	int quote = 0;
-	int count = 0;
-
 	if (!step_list) {
 		error("No list was given to fill in");
 		return 0;
-	} else if (!names)
-		return 0;
-
-	if (names[i] == '\"' || names[i] == '\'') {
-		quote_c = names[i];
-		quote = 1;
-		i++;
-	}
-	start = i;
-	while (names[i]) {
-		//info("got %d - %d = %d", i, start, i-start);
-		if (quote && names[i] == quote_c)
-			break;
-		else if (names[i] == '\"' || names[i] == '\'')
-			names[i] = '`';
-		else if (names[i] == ',') {
-			count += _addto_step_list_internal(
-				step_list, names, start, i);
-			start = i + 1;
-		}
-		i++;
 	}
 
-	count += _addto_step_list_internal(step_list, names, start, i);
-
-	return count;
+	return slurm_parse_char_list(step_list, names, NULL,
+			      	     _addto_step_list_internal);
 }
 
 extern int slurm_sort_char_list_asc(void *v1, void *v2)
@@ -1356,12 +1264,14 @@ extern void slurm_free_node_registration_status_msg(
 {
 	if (msg) {
 		xfree(msg->arch);
+		xfree(msg->dynamic_conf);
 		xfree(msg->dynamic_feature);
 		xfree(msg->cpu_spec_list);
 		if (msg->energy)
 			acct_gather_energy_destroy(msg->energy);
 		xfree(msg->features_active);
 		xfree(msg->features_avail);
+		xfree(msg->hostname);
 		if (msg->gres_info)
 			free_buf(msg->gres_info);
 		xfree(msg->node_name);
@@ -1378,6 +1288,7 @@ extern void slurm_free_node_reg_resp_msg(
 	if (!msg)
 		return;
 
+	xfree(msg->node_name);
 	FREE_NULL_LIST(msg->tres_list);
 	xfree(msg);
 }
@@ -1529,6 +1440,7 @@ extern void slurm_free_kill_job_msg(kill_job_msg_t * msg)
 {
 	if (msg) {
 		int i;
+		slurm_cred_destroy(msg->cred);
 		xfree(msg->details);
 		FREE_NULL_LIST(msg->job_gres_info);
 		xfree(msg->nodes);
@@ -3281,6 +3193,16 @@ extern char *reservation_flags_string(reserve_info_t * resv_ptr)
 			xstrcat(flag_str, ",");
 		xstrcat(flag_str, "IGNORE_JOBS");
 	}
+	if (flags & RESERVE_FLAG_HOURLY) {
+		if (flag_str[0])
+			xstrcat(flag_str, ",");
+		xstrcat(flag_str, "HOURLY");
+	}
+	if (flags & RESERVE_FLAG_NO_HOURLY) {
+		if (flag_str[0])
+			xstrcat(flag_str, ",");
+		xstrcat(flag_str, "NO_HOURLY");
+	}
 	if (flags & RESERVE_FLAG_DAILY) {
 		if (flag_str[0])
 			xstrcat(flag_str, ",");
@@ -4211,13 +4133,16 @@ extern void accounting_enforce_string(uint16_t enforce, char *str, int str_len)
 {
 	if (str_len > 0)
 		str[0] = '\0';
-	if (str_len < 30) {
+	if (str_len < 50) {
 		error("enforce: output buffer too small");
 		return;
 	}
 
-	if (enforce & ACCOUNTING_ENFORCE_ASSOCS)
+	if (enforce & ACCOUNTING_ENFORCE_ASSOCS) {
+		if (str[0])
+			strcat(str, ",");
 		strcat(str, "associations"); //12 len
+	}
 	if (enforce & ACCOUNTING_ENFORCE_LIMITS) {
 		if (str[0])
 			strcat(str, ",");
@@ -5200,7 +5125,9 @@ extern int slurm_free_msg_data(slurm_msg_type_t type, void *data)
 	case REQUEST_UPDATE_FRONT_END:
 		slurm_free_update_front_end_msg(data);
 		break;
+	case REQUEST_CREATE_NODE:
 	case REQUEST_UPDATE_NODE:
+	case REQUEST_DELETE_NODE:
 		slurm_free_update_node_msg(data);
 		break;
 	case REQUEST_CREATE_PARTITION:
@@ -5759,6 +5686,10 @@ rpc_num2string(uint16_t opcode)
 		return "REQUEST_UPDATE_RESERVATION";
 	case REQUEST_UPDATE_FRONT_END:				/* 3011 */
 		return "REQUEST_UPDATE_FRONT_END";
+	case REQUEST_DELETE_NODE:
+		return "REQUEST_DELETE_NODE";
+	case REQUEST_CREATE_NODE:
+		return "REQUEST_CREATE_NODE";
 
 	case REQUEST_RESOURCE_ALLOCATION:			/* 4001 */
 		return "REQUEST_RESOURCE_ALLOCATION";

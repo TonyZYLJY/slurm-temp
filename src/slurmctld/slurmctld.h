@@ -241,6 +241,13 @@ extern bool   test_config;
 extern int    test_config_rc;
 
 /*****************************************************************************\
+ * Configless data structures, defined in src/slurmctld/proc_req.c
+\*****************************************************************************/
+extern char *slurmd_config_files[];
+
+extern config_response_msg_t *config_for_slurmd;
+
+/*****************************************************************************\
  *  NODE parameters and data structures, mostly in src/common/node_conf.h
 \*****************************************************************************/
 extern bool ping_nodes_now;		/* if set, ping nodes immediately */
@@ -255,6 +262,7 @@ typedef struct node_features {
 
 extern List active_feature_list;/* list of currently active node features */
 extern List avail_feature_list;	/* list of available node features */
+extern List conf_includes_list; /* list of conf_includes_map_t */
 
 /*****************************************************************************\
  *  NODE states and bitmaps
@@ -381,7 +389,9 @@ typedef struct {
 	uint32_t min_nodes_orig;/* unscaled value (c-nodes on BlueGene) */
 	char *name;		/* name of the partition */
 	bitstr_t *node_bitmap;	/* bitmap of nodes in partition */
-	char *nodes;		/* comma delimited list names of nodes */
+	char *nodes;		/* expanded nodelist from orig_nodes */
+	char *orig_nodes;	/* comma delimited list names of nodes */
+	char *nodesets;		/* store nodesets for display, NO PACK */
 	double   norm_priority;	/* normalized scheduling priority for
 				 * jobs (DON'T PACK) */
 	uint16_t over_time_limit; /* job's time limit can be exceeded by this
@@ -793,8 +803,6 @@ struct job_record {
 	char *network;			/* network/switch requirement spec */
 	uint32_t next_step_id;		/* next step id to be used */
 	char *nodes;			/* list of nodes allocated to job */
-	slurm_addr_t *node_addr;	/* addresses of the nodes allocated to
-					 * job */
 	bitstr_t *node_bitmap;		/* bitmap of nodes allocated to job */
 	bitstr_t *node_bitmap_cg;	/* bitmap of nodes completing job */
 	bitstr_t *node_bitmap_pr;	/* bitmap of nodes with running prolog */
@@ -1268,7 +1276,7 @@ extern void excise_node_from_job(job_record_t *job_ptr,
 				 node_record_t *node_ptr);
 
 /* make_node_avail - flag specified node as available */
-extern void make_node_avail(int node_inx);
+extern void make_node_avail(node_record_t *node_ptr);
 
 /*
  * Copy a job's feature list
@@ -2282,9 +2290,6 @@ extern void save_all_state(void);
  * restored */
 extern void ctld_assoc_mgr_init(void);
 
-/* send all info for the controller to accounting */
-extern void send_all_to_accounting(time_t event_time, int db_rc);
-
 /* A slurmctld lock needs to at least have a node read lock set before
  * this is called */
 extern void set_cluster_tres(bool assoc_mgr_locked);
@@ -2480,6 +2485,12 @@ extern int update_job(slurm_msg_t *msg, uid_t uid, bool send_msg);
 extern int update_job_str(slurm_msg_t *msg, uid_t uid);
 
 /*
+ * Allocate a kill_job_msg_t and populate most fields.
+ */
+extern kill_job_msg_t *create_kill_job_msg(job_record_t *job_ptr,
+					   uint16_t protocol_version);
+
+/*
  * Modify the wckey associated with a pending job
  * IN module - where this is called from
  * IN job_ptr - pointer to job which should be modified
@@ -2507,10 +2518,11 @@ extern void update_logging(void);
 /*
  * update_node - update the configuration data for one or more nodes
  * IN update_node_msg - update node request
+ * IN auth_uid - UID that issued the update
  * RET 0 or error code
  * global: node_record_table_ptr - pointer to global node table
  */
-extern int update_node ( update_node_msg_t * update_node_msg )  ;
+extern int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid);
 
 /* Update nodes accounting usage data */
 extern void update_nodes_acct_gather_data(void);
@@ -2523,6 +2535,34 @@ extern void update_nodes_acct_gather_data(void);
  */
 extern int update_node_record_acct_gather_data(
 	acct_gather_node_resp_msg_t *msg);
+
+/*
+ * Create nodes from scontrol using slurm.conf nodeline syntax.
+ *
+ * IN nodeline - slurm.conf nodename description.
+ * OUT err_msg - pass error messages out.
+ * RET SLURM_SUCCESS on success, SLURM_ERROR otherwise.
+ */
+extern int create_nodes(char *nodeline, char **err_msg);
+
+/*
+ * Create and add dynamic node to system from registration.
+ *
+ * IN msg - slurm_msg_t containing slurm_node_registration_status_msg_t.
+ * RET SLURM_SUCCESS on success, SLURM_ERROR otherwise.
+ */
+extern int create_dynamic_reg_node(slurm_msg_t *msg);
+
+/*
+ * Delete node names from system from a slurmctld perspective.
+ *
+ * e.g. remove node from partitions, reconfig cons_tres, etc.
+ *
+ * IN names - node names to delete.
+ * OUT err_msg - pass error messages out.
+ * RET SLURM_SUCCESS on success, error code otherwise.
+ */
+extern int delete_nodes(char *names, char **err_msg);
 
 /*
  * Process string and set partition fields to appropriate values if valid
@@ -2659,6 +2699,8 @@ extern void cleanup_completing(job_record_t *job_ptr);
  * RPC.
  */
 extern void configless_setup(void);
+/* Reload the internal cached config values. */
+extern void configless_update(void);
 /* Free cached values to avoid memory leak. */
 extern void configless_clear(void);
 
@@ -2873,5 +2915,42 @@ extern int job_get_node_inx(char *node_name, bitstr_t *node_bitmap);
  */
 extern int update_node_active_features(char *node_names, char *active_features,
 				       int mode);
+
+/*
+ * update_node_avail_features - Update available features associated with
+ *	nodes, build new config list records as needed
+ * IN node_names - List of nodes to update
+ * IN avail_features - New available features value
+ * IN mode - FEATURE_MODE_IND : Print each node change indivually
+ *           FEATURE_MODE_COMB: Try to combine like changes (SEE NOTE BELOW)
+ *           FEATURE_MODE_PEND: Print any pending change message
+ * RET: SLURM_SUCCESS or error code
+ * NOTE: Use mode=FEATURE_MODE_IND in a loop with node write lock set,
+ *	 then call with mode=FEATURE_MODE_PEND at the end of the loop
+ */
+extern int update_node_avail_features(char *node_names, char *avail_features,
+				      int mode);
+
+/*
+ * Return a hostlist with expanded node specification.
+ *
+ * Handles node range expressions, nodesets and ALL keyword.
+ *
+ * IN nodes - nodelist that can have nodesets or ALL in it.
+ * OUT nodesets (optional) - list of nodesets found in nodes string
+ *
+ * RET NULL on error, hostlist_t otherwise.
+ *
+ * NOTE: Caller must FREE_NULL_HOSTLIST() returned hostlist_t.
+ * NOTE: Caller should interpret a non-NULL but empty hostlist conveniently.
+ */
+extern hostlist_t nodespec_to_hostlist(const char *nodes, char **nodesets);
+
+/*
+ * set_node_reboot_reason - appropriately set node reason with reboot message
+ * IN node_ptr - node_ptr to the node
+ * IN reason - message to be appended
+ */
+extern void set_node_reboot_reason(node_record_t *node_ptr, char *message);
 
 #endif /* !_HAVE_SLURMCTLD_H */

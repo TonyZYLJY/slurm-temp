@@ -280,6 +280,161 @@
 </tr>
 </table>
 
+<h4>Fix issue where association's QOS list consisted of IDs instead of names</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">modified fields</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."dbv0.0.38_association".properties.qos</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add POST method for /qos</h4>
+<table class="tchange">
+<tr>
+	<td class="tdfield">new method</td>
+	<td class="tdchange">.paths."/qos/".post</td>
+</tr>
+<tr>
+	<td class="tdfield">new path</td>
+	<td class="tdchange">.components.schemas."dbv0.0.38_response_qos"</td>
+</tr>
+<tr>
+	<td class="tdfield">new path</td>
+	<td class="tdchange">.components.schemas."dbv0.0.38_update_qos"</td>
+</tr>
+</table>
+
+<h4>Move response fields in dbv0.0.37_diag under "statistics"</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new parent field</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."dbv0.0.38_diag".properties.statistics</li>
+		</ul>
+	</td>
+	<td class="tdfield">subordinated fields</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."dbv0.0.38_diag".properties.time_start</li>
+			<li>.components.schemas."dbv0.0.38_diag".properties.rollups</li>
+			<li>.components.schemas."dbv0.0.38_diag".properties.RPCs</li>
+			<li>.components.schemas."dbv0.0.38_diag".properties.users</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Allow strings for JobIds instead of only numerical JobIds.</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">Change job_id parameter to string</td>
+	<td class="tdchange">
+		<ul>
+			<li>.paths."/job/{job_id}".get.parameters[].schema</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add with_deleted input parameter to GET /user, /users</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">New parameter</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/user/{user_name}".get.parameters[] | select(.name=="with_deleted")</li>
+			<li>.paths."/users/".get.parameters[] | select(.name=="with_deleted")</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add deleted flag to /user, /users output</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">New property</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."dbv0.0.38_user".properties.flags</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add with_deleted input parameter to GET /qos</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">New parameter</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/qos/".get.parameters[] | select(.name=="with_deleted")</li>
+			<li>.paths."/qos/{qos_name}".get.parameters[] | select(.name=="with_deleted")</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add with_deleted input parameter to GET /account, /accounts</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">New parameter</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/account/{account_name}".get.parameters[] | select(.name=="with_deleted")</li>
+			<li>.paths."/accounts/".get.parameters[] | select(.name=="with_deleted")</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add container field to job description</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new fields</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."dbv0.0.38_job".properties.container</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Enforce limit to only DELETE or GET a single association instead of using
+required parameters.</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">changed value</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/association/".get.parameters[].required</li>
+			<li>.paths."/association/".delete.parameters[].required</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add filter parameters to GET /associations</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new method</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/associations/".get.parameters</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h3>openapi/dbv0.0.36 (src/plugins/openapi/dbv0.0.36/openapi.json)</h3>
+
+<h4>Deprecation notice</h4>
+The dbv0.0.36 plugin has now been marked as deprecated.
+
 <h3>openapi/v0.0.38 (src/plugins/openapi/v0.0.38/openapi.json)</h3>
 
 <h4>add plugin</h4>
@@ -569,6 +724,78 @@
 	</td>
 </tr>
 </table>
+
+<h4>Response changed to move "cores" into "sockets" to differentiate which
+	cores and sockets are allocated. Changed from named dictionary of node
+	names to array containing objects with nodename set.</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">Updated response.</td>
+	<td class="tdchange">
+		<ul>
+			<li>.components.schemas."v0.0.38_job_resources".properties.allocated_nodes</li>
+			<li>.components.schemas."v0.0.38_node_allocation"</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>New fields add to diag endpoint</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new fields</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."v0.0.38_diag_rpcm".rpcs_by_message_type</li>
+			<li>.components.schemas."v0.0.38_diag_rpcm".rpcs_by_user</li>
+			<li>.components.schemas."v0.0.38_diag_rpcm"</li>
+			<li>.components.schemas."v0.0.38_diag_rpcu"</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add container field to job description</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new fields</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.components.schemas."v0.0.38_job_response_properties".properties.container</li>
+			<li>.components.schemas."v0.0.38_job_properties".properties.container</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Add method to delete associations using filters</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">new method</td>
+	<td class="tdchange" colspan=2>
+		<ul>
+			<li>.paths."/associations/".delete</li>
+		</ul>
+	</td>
+</tr>
+</table>
+
+<h4>Rename response schema entry</h4>
+<table class="tchange">
+<tr class="trchange">
+	<td class="tdfield">previous path</td>
+	<td class="tdchange">.components.schemas."dbv0.0.38_response_association_delete"</td>
+</tr>
+<tr class="trchange">
+	<td class="tdfield">new path</td>
+	<td class="tdchange">.components.schemas."dbv0.0.38_response_associations_delete"</td>
+</tr>
+</table>
+
+<h3>openapi/v0.0.36 (src/plugins/openapi/v0.0.36/openapi.json)</h3>
+
+<h4>Deprecation notice</h4>
+The v0.0.36 plugin has now been marked as deprecated.
 
 <h3>openapi/v0.0.35 (src/plugins/openapi/v0.0.35/openapi.json)</h3>
 

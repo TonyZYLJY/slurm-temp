@@ -67,6 +67,15 @@
 #define	_bit_mask(bit) ((bitstr_t)1 << ((bit)&BITSTR_MAXPOS))
 #endif
 
+/* mask for less significant bits within their word*/
+#ifdef SLURM_BIGENDIAN
+#define _bit_nmask(n) \
+	((~((bitstr_t) 0)) << ((BITSTR_MAXPOS + 1) - ((n) & BITSTR_MAXPOS)))
+#else
+#define _bit_nmask(n) \
+	(((bitstr_t) 1 << ((n) & BITSTR_MAXPOS)) - 1)
+#endif
+
 /* number of bits actually allocated to a bitstr */
 #define _bitstr_bits(name) 	((name)[1])
 
@@ -650,14 +659,7 @@ bit_super_set(bitstr_t *b1, bitstr_t *b2)
 			bitstr_t mask;
 			if ((bit + sizeof(bitstr_t) * 8) <= _bitstr_bits(b1))
 				return 0;
-#ifdef SLURM_BIGENDIAN
-			mask = ((~((bitstr_t) 0)) <<
-				((BITSTR_MAXPOS + 1) -
-				 (_bitstr_bits(b1) & BITSTR_MAXPOS)));
-#else
-			mask = (((bitstr_t) 1 <<
-				(_bitstr_bits(b1) & BITSTR_MAXPOS)) - 1);
-#endif
+			mask = _bit_nmask(_bitstr_bits(b1));
 			if ((b1[_bit_word(bit)] & mask) != (b1[_bit_word(bit)] &
 							    b2[_bit_word(bit)] &
 							    mask))
@@ -847,9 +849,9 @@ bit_set_count(bitstr_t *b)
 	for (bit = 0; (bit + word_size) <= bit_cnt; bit += word_size) {
 		count += hweight(b[_bit_word(bit)]);
 	}
-	for ( ; bit < bit_cnt; bit++) {
-		if (bit_test(b, bit))
-			count++;
+	if (bit < bit_cnt) {
+		uint64_t mask = _bit_nmask(bit_cnt);
+		count += hweight(b[_bit_word(bit)] & mask);
 	}
 	return count;
 }
@@ -872,17 +874,26 @@ bit_set_count_range(bitstr_t *b, int32_t start, int32_t end)
 	_assert_bit_valid(b,start);
 
 	end = MIN(end, _bitstr_bits(b));
-	eow = ((start+word_size-1)/word_size) * word_size;  /* end of word */
-	for ( bit = start; bit < end && bit < eow; bit++) {
-		if (bit_test(b, bit))
-			count++;
+	/* end of word */
+	eow = (((start + BITSTR_MAXPOS) >> BITSTR_SHIFT) << BITSTR_SHIFT);
+
+	bit = start;
+	if ((start < eow) && (eow <= end)) {
+		uint64_t mask = ~_bit_nmask(start);
+		count += hweight(b[_bit_word(bit)] & mask);
+		bit = eow;
+	} else if (eow > start) {
+		uint64_t mask = ~_bit_nmask(start);
+		mask &= _bit_nmask(end);
+		count += hweight(b[_bit_word(bit)] & mask);
+		bit = eow;
 	}
 	for (; (bit + word_size) <= end ; bit += word_size) {
 		count += hweight(b[_bit_word(bit)]);
 	}
-	for ( ; bit < end; bit++) {
-		if (bit_test(b, bit))
-			count++;
+	if (bit < end) {
+		uint64_t mask = _bit_nmask(end);
+		count += hweight(b[_bit_word(bit)] & mask);
 	}
 
 	return count;
@@ -909,13 +920,14 @@ static int32_t _bit_overlap_internal(bitstr_t *b1, bitstr_t *b2, bool count_it)
 		else if (anded)
 			return 1;
 	}
-	for ( ; bit < bit_cnt; bit++) {
-		if (bit_test(b1, bit) && bit_test(b2, bit)) {
-			if (count_it)
-				count++;
-			else
-				return 1;
-		}
+
+	if (bit < bit_cnt) {
+		uint64_t mask = _bit_nmask(bit_cnt);
+		anded = b1[_bit_word(bit)] & b2[_bit_word(bit)] & mask;
+		if (count_it)
+			count += hweight(anded);
+		else if (anded)
+			return 1;
 	}
 
 	return count;
@@ -1741,4 +1753,14 @@ bit_get_pos_num(bitstr_t *b, bitoff_t pos)
 	}
 
 	return cnt;
+}
+
+void bit_consolidate(bitstr_t *b)
+{
+	int set_count = bit_set_count(b);
+
+	if (set_count && (set_count < bit_size(b))) {
+		bit_nclear(b, set_count, bit_size(b) - 1);
+		bit_nset(b, 0, set_count - 1);
+	}
 }

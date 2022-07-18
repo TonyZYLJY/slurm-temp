@@ -160,6 +160,7 @@ extern int db_query_list_funcname(data_t *errors, rest_auth_context_t *auth,
 	l = func(db_conn, cond);
 
 	if (errno) {
+		FREE_NULL_LIST(l);
 		return resp_error(errors, errno, NULL, func_name);
 	} else if (!l) {
 		return resp_error(errors, ESLURM_REST_INVALID_QUERY,
@@ -191,6 +192,35 @@ extern int db_query_rc_funcname(data_t *errors,
 
 	if (rc)
 		return resp_error(errors, rc, NULL, func_name);
+
+	return rc;
+}
+
+extern int db_modify_rc_funcname(data_t *errors, rest_auth_context_t *auth,
+				 void *cond, void *obj,
+				 db_rc_modify_func_t func,
+				 const char *func_name)
+{
+	List changed;
+	int rc = SLURM_SUCCESS;
+	void *db_conn;
+
+	if (!(db_conn = openapi_get_db_conn(auth))) {
+		return resp_error(errors, ESLURM_DB_CONNECTION,
+				  "Failed connecting to slurmdbd", func_name);
+	}
+
+	errno = 0;
+	if (!(changed = func(db_conn, cond, obj))) {
+		if (errno)
+			rc = errno;
+		else
+			rc = SLURM_ERROR;
+
+		return resp_error(errors, rc, NULL, func_name);
+	}
+
+	FREE_NULL_LIST(changed);
 
 	return rc;
 }

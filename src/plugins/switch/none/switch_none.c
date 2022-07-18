@@ -40,8 +40,12 @@
 #include <signal.h>
 #include <sys/types.h>
 
+#include "slurm/slurm.h"
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
+
+#include "src/slurmctld/slurmctld.h"
+#include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
 /*
  * These variables are required by the generic plugin interface.  If they
@@ -266,4 +270,9 @@ extern int switch_p_job_step_pre_resume( stepd_step_rec_t *job )
 extern int switch_p_job_step_post_resume( stepd_step_rec_t *job )
 {
 	return SLURM_SUCCESS;
+}
+
+extern void switch_p_job_complete(uint32_t job_id)
+{
+	return;
 }
