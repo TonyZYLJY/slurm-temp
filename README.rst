@@ -78,3 +78,7 @@ LEGAL
 Slurm is provided "as is" and with no warranty. This software is
 distributed under the GNU General Public License, please see the files
 COPYING, DISCLAIMER, and LICENSE.OpenSSL for details.
+
+CHANGES MAKE BY ME
+------------------
+This branch is aiming to develop a SJF scheduler(shortest job first). In case of tie timing, the job with lower job ID will be scheduled first by Slurm scheduler. I have edited the builtin.c file to make it happen. I'm currently working on to develop a stand alone plugin for this purpose.
