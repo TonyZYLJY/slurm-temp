@@ -139,6 +139,7 @@ static void _load_config(void)
 	}
 }
 
+// function created by Tony, just to display current job list
 static void display_list(){
 	List job_queue;
 	job_record_t *job_ptr;
@@ -152,6 +153,7 @@ static void display_list(){
 	FREE_NULL_LIST(job_queue);	
 }
 
+// compute start time for each job in the job list
 static void _compute_start_times(void)
 {
 	int j, rc = SLURM_SUCCESS, job_cnt = 0;
@@ -168,8 +170,14 @@ static void _compute_start_times(void)
 	sched_start = now;
 	last_job_alloc = now - 1;
 	alloc_bitmap = bit_alloc(node_record_count);
+
+	// build a copy of job list
 	job_queue = build_job_queue(true, false);
+
 	//sort_job_queue(job_queue);
+
+	// sort the job based on job run time, if run time is equal, sort by job id ascendingly
+	// this function is create by Tony
 	sort_job_queue_outer(job_queue);
 	while ((job_queue_rec = (job_queue_rec_t *) list_pop(job_queue))) {
 		job_ptr  = job_queue_rec->job_ptr;
@@ -220,7 +228,10 @@ static void _compute_start_times(void)
 				       SELECT_MODE_WILL_RUN,
 				       NULL, NULL,
 				       exc_core_bitmap);
-		// following code is testing
+		/* ========================================= */
+		/* following code is experimental            */
+		/* ========================================= */
+		// select a node for running the next job
 		rc = select_nodes(job_ptr, false, NULL, NULL, false, SLURMDB_JOB_FLAG_NOTSET);
 		if (rc == SLURM_SUCCESS) {
 			last_job_update = time(NULL);
